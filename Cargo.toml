@@ -1,5 +1,5 @@
 [package]
-name = "git-db"
+name = "gitdb"
 version = "0.1.0"
 authors = ["David Rusu <davidrusu@protonmail.com>"]
 description = "encrypted database built on top of git"
