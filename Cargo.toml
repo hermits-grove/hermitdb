@@ -4,6 +4,7 @@ version = "0.1.0"
 authors = ["David Rusu <davidrusu@protonmail.com>"]
 description = "encrypted database built on top of git"
 license="GPL-2.0-only"
+
 [dependencies]
 git2 = "0.6.11"
 ring = "0.13.0-alpha"
