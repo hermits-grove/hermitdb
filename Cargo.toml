@@ -4,3 +4,10 @@ version = "0.1.0"
 authors = ["David Rusu <davidrusu.me@gmail.com>"]
 
 [dependencies]
+git2 = "0.6.11"
+ring = "0.13.0-alpha"
+toml = "0.4.5"
+serde = "1.0.27"
+serde_derive = "1.0.27"
+data-encoding = "2.1.1"
+time = "0.1.39"
