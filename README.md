@@ -153,7 +153,7 @@ iterations <- fetch from gitb (single iterations value for entire db)
 master_passphrase <- read from users mind
 
 pbkdf2_key <- PBKDF2(
-  algo: SHA-256,
+  algo: SHA_256,
   pass: master_passphrase,
   salt: key_salt,
   iters: iterations,
@@ -169,23 +169,22 @@ Since we are using an encryption algorithm who's nonce is 96bits, the nonce spac
 
 Instead we use randomly generated 256bit salts as inputs to our kdf to give us unique encryption keys each time we encrypt. On encrypt, old salts are discarded and new ones generated.
 
-Why is this done? Managing nonces in a distributed system is difficult, for instance if we use incrementing nonces, we could enter a situation where two sites A and B both modify and re-encrypt the same file, both sites would incrementing the same nonce but they are encrypting (potentially) different plaintext, if we are not careful how we resolve this conflict we could end up with a key being exposed.
+Why is this done? Managing nonces in a distributed system is difficult, for instance if we use incrementing nonces, we could enter a situation where two sites A and B both modify and re-encrypt the same file, both sites would increment the same nonce but they are encrypting (potentially) different plaintext, if we are not careful how we resolve this conflict we could end up with a key being exposed.
 
 So as a workaround until Rust gets a XChaCha20-Poly1305 implementation, we are opting for never reusing a secret key.
 
 ``` haskell
 gitdb_key <- USER INPUT  -- e.g. '/a/b/c')
 plaintext <- USER INPUT
+key_salt <- generate_random_salt -- random 256bit salt
+persist_key_salt(gitdb_key, key_salt) -- overwrites old key_salt for this GitDB key
 
-generate_and_store_key_salt(gitdb_key) -- this generates a random 256bit salt and persists it to gitdb
-
-key <- generated as outlined #key_derivation above
-nonce <- 0 
+key <- generated as outlined in <a href="#key-derivation">Key Derivation</a> above
 
 ciphertext <- AEAD(
   algo: CHACHA20_POLY1305
   secret_key: key,
-  nonce: 0, -- random salts to give us unique keys, we never encrypt with the same key twice.
-  ad: Sha256(gitdb_key) | key_salt -- TODO: consider what data would be prudent to add
+  nonce: 0, -- random salts to give us unique secret_keys, we never encrypt with a key twice.
+  ad: SHA_256(gitdb_key) | key_salt -- TODO: consider what data would be prudent to add
 )
 ```
