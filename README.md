@@ -176,10 +176,11 @@ So as a workaround until Rust gets a XChaCha20-Poly1305 implementation, we are o
 ``` haskell
 gitdb_key <- USER INPUT  -- e.g. '/a/b/c')
 plaintext <- USER INPUT
+
 key_salt <- generate_random_salt -- random 256bit salt
 persist_key_salt(gitdb_key, key_salt) -- overwrites old key_salt for this GitDB key
 
-key <- generated as outlined in <a href="#key-derivation">Key Derivation</a> above
+key <- generated as outlined in the Key Derivation section above
 
 ciphertext <- AEAD(
   algo: CHACHA20_POLY1305
