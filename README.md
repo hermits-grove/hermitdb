@@ -69,7 +69,7 @@ Namespace's store references to blobs and child namespaces.
 
 ### Analysis of GitDB actions
 
-#### namespace
+#### `namespace`
 
 Opens the requested namespace, if it does not exist, recursively create missing namespaces along the path
 
@@ -140,4 +140,52 @@ Assume namespace `/a/b` exists prior to call
 Git repository state after call:
 ```
 modified: ./ca/7e59ca7c68a15c085d98ed2ec60b09354187d3c7ed8e631e82862c41eebf0c // derived from sha256("/a/b")
+```
+
+### GitDB Crypto
+
+#### Key Derivation
+
+``` haskell
+key_file <- 256 bit key file fetched from local filesystem
+key_salt <- fetch from gitdb -- random salt per key is stored in plaintext (here key refers to a GitDB key not an encryption key e.g. a GitDB key is a string like "/a/b/c")
+iterations <- fetch from gitb (single iterations value for entire db)
+master_passphrase <- read from users mind
+
+pbkdf2_key <- PBKDF2(
+  algo: SHA-256,
+  pass: master_passphrase,
+  salt: key_salt,
+  iters: iterations,
+  length: 256
+)
+
+key <- pbkdf2_key XOR key_file
+```
+
+#### Encryption
+
+Since we are using an encryption algorithm who's nonce is 96bits, the nonce space is not large enough to give us confidence in random nonces.
+
+Instead we use randomly generated 256bit salts as inputs to our kdf to give us unique encryption keys each time we encrypt. On encrypt, old salts are discarded and new ones generated.
+
+Why is this done? Managing nonces in a distributed system is difficult, for instance if we use incrementing nonces, we could enter a situation where two sites A and B both modify and re-encrypt the same file, both sites would incrementing the same nonce but they are encrypting (potentially) different plaintext, if we are not careful how we resolve this conflict we could end up with a key being exposed.
+
+So as a workaround until Rust gets a XChaCha20-Poly1305 implementation, we are opting for never reusing a secret key.
+
+``` haskell
+gitdb_key <- USER INPUT  -- e.g. '/a/b/c')
+plaintext <- USER INPUT
+
+generate_and_store_key_salt(gitdb_key) -- this generates a random 256bit salt and persists it to gitdb
+
+key <- generated as outlined #key_derivation above
+nonce <- 0 
+
+ciphertext <- AEAD(
+  algo: CHACHA20_POLY1305
+  secret_key: key,
+  nonce: 0, -- random salts to give us unique keys, we never encrypt with the same key twice.
+  ad: Sha256(gitdb_key) | key_salt -- TODO: consider what data would be prudent to add
+)
 ```
