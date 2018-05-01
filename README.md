@@ -1,152 +1,200 @@
-# GitDB - Security First Datastore for User Focused Applications
+# GitDB
 
-GitDB aims to provide an encrypted at rest distributed database for apps which help users organize their life, think todo apps, password managers, contacts manager, quantified self applications.
+###### A Security First Datastore for User Focused Applications
 
-We want to give users control over their data while maintaining the kinds of cross device syncing we have become accustomed to with centralized applications.
+GitDB aims to provide an encrypted distributed database for offline first user focused apps. Think todo apps, password managers, etc.
 
-GitDB uses Git as the foundation for a distributed database, by using git we inherit all of the existing infrastructure built around managing git repositories (github, gitlab, etc.)
+Applications built using GitDB give users control over their data while maintaining the many of the conveniences of centralized applications.
 
-GitDB provides a set of data structures which attempt to make conflict resolution as painless as possible.
+By using Git we inherit:
+
+1. a solid distributed foundation for our database
+
+2. all existing infrastructure and tooling for managing Git repositories (github, gitlab, etc.)
+
+On top of Git, GitDB adds encryption, a collection of CRDT data structures, and a Query interface.
 
 ## Design
 
-GitDB is structured like a filesystem: the building blocks you have to work with are `keys`, `namespaces` and `blobs`.
+Staying true to Git's roots, GitDB wraps a tree based key value store on top of a content addressable storage (CAS) core.
 
-### anatomy of a Key:
+We add 4 concepts on top of Git: `Block`, `Path`, `TreeBlock` and `BlobBlock`. These are encrypted varients of the familiar Git concepts of the `Object`, `file path`, `Tree` and `Blob` respectively.
 
-keys are checked against the regex: `^/[_\.\-a-zA-Z0-9]+(/[_\.\-a-zA-Z0-9]+)*$`
+####Block
 
-in english:
-- keys start with `/`
-- keys can have multiple non-empty key components using alpha-numeric, `_`, `-`, or `.` characters
-- key components are seperated by `/`
+A `Block` is a single unit of data, `Block`'s are encrypted and stored on disk as a Git blob.
 
-Examples:
-```
-VALID: /mona/social/news.ycombinator.com
-VALID: /aA0_-
-VALID: /a/A/0/_/-
-VALID: /
-INVALID: /a/
-INVALID: /a//b
-INVALID: /#
-```
+####Path
 
-### Blob
-Blobs are where your data is stored.
+A `Path` is a unique name that maps to a `Block`.
 
-Blob keys must not already be used to reference a namespace.
+######Path Format
 
-The algorithm to store a blob is outlined here:
-```
-blob <- encrypt(your_data)
-oid <- git_add(blob)
+`Path`'s begin with a `/` and are followed by zero or more *Path Components* interspersed with `/` .
 
-key <- /your/namespace/data_name
-/your/namespace, data_name <- partition_key(key)
-ns <- read_namespace(/your/namespace)
+*Path components* may contain any unicode charactor besides the special charactors, special charactors are `\` and `/`. To use a special charactor you'll need to prefix it with the escape charactor `\`.
 
-ns.add_blob(data_name, oid)
-```
+*valid paths:* `/`,  `/a`, `/a/bb/ccc`, `/ /a\/b\\&$#/c `
 
-The main idea is that namespaces store a reference to the git object id. Later to fetch a blob, we discover the blob by reading the namespace and following the object id.
+*invalid paths:*
 
-### Namespace
+- ` ` : the empty path is invalid.
+- `/a/ ` : paths can't end in a `/`.
+- `/a//c` : paths can't have empty components.
+- `/a\b` :  can't escape non-special charactors.
 
-Just like a blob, a Namespace is referenced by a key, the namespace in gitdb is analogous to a filesystem directory.
+######Mapping a Path to a file on disk
 
+To avoid leaking information about what is stored  on disk GitDB goes through a path obfuscation step before writing a file to disk.
 
-The algorithm to create a namespace is outlined here:
-```
-key <- /your/new/namespace_name
-/your/new, namespace_name <- partition_key(key)
-ns <- read_namespace(/your/new)
+An encrypted salt is stored at the root of the Git repository `./salt`.
 
-ns.add_namespace(namespace_name)
+```haskell
+path <- "/a/b/c"
+encrypted_salt <- os.fs.read("$GIT_ROOT/salt")
+salt <- decrypt(secret_key, encrypted_salt) -- suppose salt == '$'
+obf <- sha256(salt ++ path) -- => sha256("$/a/b/c")
+-- => d61f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a
+path_on_disk <- os.fs.path.join("$GIT_ROOT"), "cryptic", obf[0..2], obf[2..])
+-- => $GIT_ROOT/cryptic/d6/1f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a
 ```
 
-Namespace's store references to blobs and child namespaces.
+####TreeBlock
+
+A `TreeBlock` is a `Block` that stores relationships between `Path`'s and `Block`'s. A `TreeBlock` stores entries of path's with a common prefix along with a flag telling us if this sub path is a `TreeBlock` or a `BlobBlock`.
+
+ie. If we've got a `BlobBlock` in our DB with path `/a/b`, then:
+
+ the root tree `/` will have an entry: `TREE: a`
+
+the `/a` tree will have an entry: `BLOB: b`
+
+#### BlobBlock
+
+A `BlobBlock` is a block that appears in a `TreeBlock` with a `BLOB` flag. There's nothing else to differentiate a `BlobBlock` from another `Block`.
+
+### A Worked Example
+
+Suppose we've got two applications using the same GitDB database. `Mona: a password manager`, and `People: a contacts manager`.
+
+At the root we've got two path's `/mona` and `/people`, beneath these namespaces, the apps store their data.
+
+###### State of GitDB (assume salt == "")
+
+| Path                     | Path on disk             |
+| ------------------------ | ------------------------ |
+| /                        | ./cryptic/f4/65c3...4336 |
+| /mona                    | ./cryptic/aa/d821...03b9 |
+| /mona/config             | ./cryptic/f9/d010...a68c |
+| /mona/pass               | ./cryptic/48/b343...81ad |
+| /mona/pass/pagerduty.com | ./cryptic/77/dbbe...18fb |
+| /people                  | ./cryptic/00/fcbb...9fc3 |
+| /people/config           | ./cryptic/e4/3d3e...fe40 |
+| /people/contacts         | ./cryptic/9d/0fc8…7bf2   |
+| /people/contacts/farhana | ./cryptic/48/bf31...f6cb |
+| /people/contacts/marcel  | ./cryptic/88/a07e...8f8b |
+
+######Traversing TreeBlock's from the root TreeBlock
+
+<img src="dot.png"></img>
 
 ### Analysis of GitDB actions
 
-#### `namespace`
+#### `db.tree_block`
 
-Opens the requested namespace, if it does not exist, recursively create missing namespaces along the path
+Opens the requested `TreeBlock`, creating if it does not exist
 
 ```
-db.namespace("/a/b")
+db.tree_block("/a/b")
 ```
 
-Assume `/a`, `/a/b` does not exist but `/` does exist prior to call
-1. `sha256("/a/b") -> ca7e59ca7c68a15c085d98ed2ec60b09354187d3c7ed8e631e82862c41eebf0c`
-2. convert hash to path on disk: `./ca/7e59ca7c68a15c085d98ed2ec60b09354187d3c7ed8e631e82862c41eebf0c`
+**prior state:** `salt == "$"`, `TreeBlock(/a)`, `TreeBlock(/a/b)` do not exist, `TreeBlock(/)` exists.
+
+1. `sha256("$/a/b") -> 03d4a92a45e0cddf2ec5a73efdd2582355d1df5ae80aae52f6b46d41f5607a4c`
+
+2. convert hash to path on disk: `./cryptic/03/d4a92a45e0cddf2ec5a73efdd2582355d1df5ae80aae52f6b46d41f5607a4c`
+
 3. attempt to decrypt this file, fails since it doesn't exist
-4. create empty namespace, encrypt and store on disk at `./ca/7e59ca7c68a15c085d98ed2ec60b09354187d3c7ed8e631e82862c41eebf0c`
-5. recursively open namespace `/a`: `let mut parent = db.namespace("/a");`
-6. add namespace entry `b` to `/a` namespace: `parent.add_entry("b", NS);`
+
+4. recursively call  `let mut parent = db.tree_block("\a")`
+
+5. add entry `b` to `/a` namespace: `parent.add_entry("b", TREE);`
+
+6. create empty `TreeBlock`, encrypt and store on disk at:
+
+    `./cryptic/03/d4a92a45e0cddf2ec5a73efdd2582355d1df5ae80aae52f6b46d41f5607a4c`
 
 Git repository state after call:
+
 ```
-modified: ./f4/65c3739385890c221dff1a05e578c6cae0d0430e46996d319db7439f884336 // derived from sha256("/")
-new file: ./2d/cc5f529a273b6c724045ba06f40c4cfd82a940615ca7de15535ca68da5dbb0 // derived from sha256("/a")
-new file: ./ca/7e59ca7c68a15c085d98ed2ec60b09354187d3c7ed8e631e82862c41eebf0c // derived from sha256("/a/b")
+modified: ./cryptic/fe409a363a6f...38d78cb1e7211a5b // derived from sha256("$/")
+new file: ./cryptic/a25c798de63c...b0ef3c2e49f67054 // derived from sha256("$/a")
+new file: ./cryptic/03/d4a92a45e...f6b46d41f5607a4c // derived from sha256("$/a/b")
 ```
 
 #### `put`
 
-``` rust
-db.put("/a/b/c", <blob>);
+```rust
+db.put("/a/b/c", <encrypted blob>);
 ```
 
-Assume namespace `/a/b` exists prior to call
-1. open namespace `/a/b`: `let mut ns = db.namespace("/a/b");` see `namespace` above
-2. add <blob> to git, git returns us an `OID` (object id)
-3. add blob entry `c` with oid `OID` to `/a/b` namespace: `ns.add_entry("c", BLOB)`;
+**prior state:** `salt == "$"`, `TreeBlock(/a/b)` exists.
+
+1. `sha256("$/a/b/c") -> d61f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a`
+2. convert hash to path on disk: `./cryptic/d6/1f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a`
+3. Ensure path doesn't exist
+4. open`TreeBlock(/a/b)`: `let mut tree = db.tree_block("/a/b");`
+5. add blob entry `c`  `TreeBlock(/a/b)`: `tree.add_entry("c", BLOB)`;
+6. Write `<encrypted blob>` to `./cryptic/d6/1f774e6a...b87a`
 
 Git repository state after call:
+
 ```
-new blob with `OID` stored in .git
-modified: ./ca/7e59ca7c68a15c085d98ed2ec60b09354187d3c7ed8e631e82862c41eebf0c // derived from sha256("/a/b")
+modified: ./cryptic/03/d4a92a45...7a4c // derived from sha256("$/a/b")
+new file: ./cryptic/d6/1f774e6a...b87a // derived from sha256("$/a/b/c")
 ```
 
 #### `get`
 
-``` rust
+```rust
 db.get("/a/b/c")
 ```
 
-1. open namespace `/a/b`: `let ns = db.namespace("/a/b");` see `namespace` above
-2. scan namespace for `c` entry: `let entry = ns.get_entry("c");`
-3. ensure entry is of blob type: `entry.type == BLOB`
-4. fetch the git blob using `entry.oid`
-5. decrypt the blob, return plaintext
+**prior state:** `salt == "$"`, `BlobBlock(/a/b/c)` exists.
 
-Git repository is unchanged after call
+1. `sha256("$/a/b/c") -> d61f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a`
+2. convert hash to path on disk: `./cryptic/d6/1f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a`
+3. read file from disk: `let encrypted_blob = os.fs.read("./cryptic/d6/1f77...b87a")`
+4. decrypt: `let blob = decrypt(secret_key, encrypted_blob)`
 
-
+*Git repository is unchanged after call*
 
 #### `rm`
 
-``` rust
+```rust
 db.rm("/a/b/c");
 ```
 
-Assume namespace `/a/b` exists prior to call
-1. open namespace `/a/b`: `let mut ns = db.namespace("/a/b");` see `namespace` above
-2. scan namespace for `c` entry: `let entry = ns.get_entry("c");`
-3. ensure entry is of blob type: `entry.type == BLOB`
-4. remove `c` entry from  namespace: `ns.rm_entry("c");`
+**prior state:** `salt == "$"`, `TreeBlock(/a/b)` exists.
+
+1. open`TreeBlock(/a/b)`: `let mut tree = db.tree_block("/a/b");
+2. remove `c` entry from  namespace: `ns.rm_entry("c");`
+3. `sha256("$/a/b/c") -> d61f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a`
+4. convert hash to path on disk: `./cryptic/d6/1f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a`
+5. delete the file
 
 Git repository state after call:
+
 ```
-modified: ./ca/7e59ca7c68a15c085d98ed2ec60b09354187d3c7ed8e631e82862c41eebf0c // derived from sha256("/a/b")
+modified: ./cryptic/03/d4a92a45...7a4c // derived from sha256("$/a/b")
+deleted:  ./cryptic/d6/1f774e6a...b87a // derived from sha256("$/a/b/c")
 ```
 
-### GitDB Crypto
+### Crypto
 
 #### Key Derivation
 
-``` haskell
+```haskell
 key_file <- 256 bit key file fetched from local filesystem
 key_salt <- fetch from gitdb -- random salt per key is stored in plaintext (here key refers to a GitDB key not an encryption key e.g. a GitDB key is a string like "/a/b/c")
 iterations <- fetch from gitb (single iterations value for entire db)
@@ -165,15 +213,17 @@ key <- pbkdf2_key XOR key_file
 
 #### Encryption
 
+#####Avoiding Nonce Reuse (by not using nonces)
+
 Since we are using an encryption algorithm who's nonce is 96bits, the nonce space is not large enough to give us confidence in random nonces.
 
-Instead we use randomly generated 256bit salts as inputs to our kdf to give us unique encryption keys each time we encrypt. On encrypt, old salts are discarded and new ones generated.
+Instead we use randomly generated 256bit salts as inputs to our kdf to give us unique encryption keys each time we encrypt. Salts are never reused.
 
-Why is this done? Managing nonces in a distributed system is difficult, for instance if we use incrementing nonces, we could enter a situation where two sites A and B both modify and re-encrypt the same file, both sites would increment the same nonce but they are encrypting (potentially) different plaintext, if we are not careful how we resolve this conflict we could end up with a key being exposed.
+Why is this done? Protecting against nonces reuse in a distributed system is difficult, for instance if we use naive incrementing nonces, we could enter a situation where two sites A and B both modify and re-encrypt the same file, both sites would increment the same nonce but they are encrypting (potentially) different plaintext, if we are not careful how we resolve this conflict we could end up with a key being exposed.
 
-So as a workaround until Rust gets a XChaCha20-Poly1305 implementation, we are opting for never reusing a secret key.
+So as a workaround until our Rust crypto library of choice gets an XChaCha20-Poly1305 implementation, we are opting for never reusing a secret key.
 
-``` haskell
+```haskell
 gitdb_key <- USER INPUT  -- e.g. '/a/b/c')
 plaintext <- USER INPUT
 

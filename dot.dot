@@ -1,0 +1,69 @@
+digraph design {
+  graph [pad="0.05", nodesep="0.5", ranksep="0.5"];
+  node [shape=plain]
+  rankdir=LR;
+
+  root [label=<
+    <table border="0" cellborder="1" cellspacing="0">
+      <tr><td port="0" colspan="2">/</td></tr>
+      <tr><td>TREE</td><td port="e0">mona</td></tr>
+      <tr><td>TREE</td><td port="e1">people</td></tr>
+      <tr><td>...</td><td port="en">...</td></tr>
+    </table>
+  >];
+
+  mona [label=<
+    <table border="0" cellborder="1" cellspacing="0">
+      <tr><td port="0" colspan="2">/mona</td></tr>
+      <tr><td>TREE</td><td port="e0">pass</td></tr>
+      <tr><td>BLOB</td><td port="e1">config</td></tr>
+      <tr><td>...</td><td port="en">...</td></tr>
+    </table>
+  >];
+
+  monaconfig [label="/mona/config" shape=ellipse];
+
+  pass [label=<
+    <table border="0" cellborder="1" cellspacing="0">
+      <tr><td port="0" colspan="2">/mona/pass</td></tr>
+      <tr><td>BLOB</td><td port="e0">pagerduty.com</td></tr>
+      <tr><td>...</td><td port="en">...</td></tr>
+    </table>
+  >];
+
+  pagerduty [label="/mona/pass/pagerduty.com" shape=ellipse];
+
+  people [label=<
+    <table border="0" cellborder="1" cellspacing="0">
+      <tr><td port="0" colspan="2">/people</td></tr>
+      <tr><td>TREE</td><td port="e0">contacts</td></tr>
+      <tr><td>BLOB</td><td port="e1">config</td></tr>
+      <tr><td>...</td><td port="en">...</td></tr>
+    </table>
+  >];
+
+  peopleconfig [label="/people/config" shape=ellipse];
+
+  contacts [label=<
+    <table border="0" cellborder="1" cellspacing="0">
+      <tr><td port="0" colspan="2">/people/contacts</td></tr>
+      <tr><td>BLOB</td><td port="e0">farhana</td></tr>
+      <tr><td>BLOB</td><td port="e1">marcel</td></tr>
+      <tr><td>...</td><td port="en">...</td></tr>
+    </table>
+  >];
+
+  farhana [label="/people/contacts/farhana" shape=ellipse];
+
+  marcel [label="/people/contacts/marcel" shape=ellipse];
+
+  root:e0 -> mona:0;
+  root:e1 -> people:0;
+  mona:e0 -> pass:0;
+  mona:e1 -> monaconfig;
+  pass:e0 -> pagerduty;
+  people:e0 -> contacts:0;
+  people:e1 -> peopleconfig;
+  contacts:e0 -> farhana;
+  contacts:e1 -> marcel;
+}
