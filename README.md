@@ -20,15 +20,15 @@ Staying true to Git's roots, GitDB wraps a tree based key value store on top of 
 
 We add 4 concepts on top of Git: `Block`, `Path`, `TreeBlock` and `BlobBlock`. These are encrypted varients of the familiar Git concepts of the `Object`, `file path`, `Tree` and `Blob` respectively.
 
-####Block
+#### Block
 
 A `Block` is a single unit of data, `Block`'s are encrypted and stored on disk as a Git blob.
 
-####Path
+#### Path
 
 A `Path` is a unique name that maps to a `Block`.
 
-######Path Format
+###### Path Format
 
 `Path`'s begin with a `/` and are followed by zero or more *Path Components* interspersed with `/` .
 
@@ -43,7 +43,7 @@ A `Path` is a unique name that maps to a `Block`.
 - `/a//c` : paths can't have empty components.
 - `/a\b` :  can't escape non-special charactors.
 
-######Mapping a Path to a file on disk
+###### Mapping a Path to a file on disk
 
 To avoid leaking information about what is stored  on disk GitDB goes through a path obfuscation step before writing a file to disk.
 
@@ -59,7 +59,7 @@ path_on_disk <- os.fs.path.join("$GIT_ROOT"), "cryptic", obf[0..2], obf[2..])
 -- => $GIT_ROOT/cryptic/d6/1f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a
 ```
 
-####TreeBlock
+#### TreeBlock
 
 A `TreeBlock` is a `Block` that stores relationships between `Path`'s and `Block`'s. A `TreeBlock` stores entries of path's with a common prefix along with a flag telling us if this sub path is a `TreeBlock` or a `BlobBlock`.
 
@@ -94,13 +94,13 @@ At the root we've got two path's `/mona` and `/people`, beneath these namespaces
 | /people/contacts/farhana | ./cryptic/48/bf31...f6cb |
 | /people/contacts/marcel  | ./cryptic/88/a07e...8f8b |
 
-######Traversing TreeBlock's from the root TreeBlock
+###### Traversing TreeBlock's from the root TreeBlock
 
 <img src="dot.png"></img>
 
 ### Analysis of GitDB actions
 
-#### `db.tree_block`
+#### `db.tree_block(<path>)`
 
 Opens the requested `TreeBlock`, creating if it does not exist
 
@@ -132,7 +132,7 @@ new file: ./cryptic/a25c798de63c...b0ef3c2e49f67054 // derived from sha256("$/a"
 new file: ./cryptic/03/d4a92a45e...f6b46d41f5607a4c // derived from sha256("$/a/b")
 ```
 
-#### `put`
+#### `db.put(<path>)`
 
 ```rust
 db.put("/a/b/c", <encrypted blob>);
@@ -154,7 +154,7 @@ modified: ./cryptic/03/d4a92a45...7a4c // derived from sha256("$/a/b")
 new file: ./cryptic/d6/1f774e6a...b87a // derived from sha256("$/a/b/c")
 ```
 
-#### `get`
+#### `db.get(<path>)`
 
 ```rust
 db.get("/a/b/c")
@@ -169,7 +169,7 @@ db.get("/a/b/c")
 
 *Git repository is unchanged after call*
 
-#### `rm`
+#### `db.rm(<path>)`
 
 ```rust
 db.rm("/a/b/c");
@@ -192,50 +192,112 @@ deleted:  ./cryptic/d6/1f774e6a...b87a // derived from sha256("$/a/b/c")
 
 ### Crypto
 
-#### Key Derivation
+#### Avoiding Nonce Reuse Attacks (by not using nonces)
 
-```haskell
-key_file <- 256 bit key file fetched from local filesystem
-key_salt <- fetch from gitdb -- random salt per key is stored in plaintext (here key refers to a GitDB key not an encryption key e.g. a GitDB key is a string like "/a/b/c")
-iterations <- fetch from gitb (single iterations value for entire db)
-master_passphrase <- read from users mind
+*WORKAROUND UNTIL https://github.com/briansmith/ring/issues/411 IS RESOLVED*
 
-pbkdf2_key <- PBKDF2(
-  algo: SHA_256,
-  pass: master_passphrase,
-  salt: key_salt,
-  iters: iterations,
-  length: 256
-)
+As described in https://tools.ietf.org/html/rfc5116#section-3.1 
 
-key <- pbkdf2_key XOR key_file
-```
-
-#### Encryption
-
-#####Avoiding Nonce Reuse (by not using nonces)
+> Many problems with nonce reuse can be avoided by changing a key in a situation in which nonce coordination is difficult.
 
 Since we are using an encryption algorithm who's nonce is 96bits, the nonce space is not large enough to give us confidence in random nonces.
 
 Instead we use randomly generated 256bit salts as inputs to our kdf to give us unique encryption keys each time we encrypt. Salts are never reused.
 
-Why is this done? Protecting against nonces reuse in a distributed system is difficult, for instance if we use naive incrementing nonces, we could enter a situation where two sites A and B both modify and re-encrypt the same file, both sites would increment the same nonce but they are encrypting (potentially) different plaintext, if we are not careful how we resolve this conflict we could end up with a key being exposed.
+Why is this done? Protecting against nonces reuse in a distributed system is difficult, for instance if we use naive incrementing nonces, we could enter a situation where two sites both modify and re-encrypt the same block: both sites would increment the same nonce but they are encrypting (potentially) different plaintext, if we are not careful how we resolve this conflict we will expose the secret key.
 
-So as a workaround until our Rust crypto library of choice gets an XChaCha20-Poly1305 implementation, we are opting for never reusing a secret key.
+#### key files
+
+Key files random 256 bit keys  that are used to add additional entropy into the key derivation process. They are stored in plaintext on each site, but never leaves your device (in plaintext).
+
+The same key file must be present on each site to access your data.
+
+**TODO: how to do key_file sharing? probably need to do a key echange** https://briansmith.org/rustdoc/ring/agreement/index.html
+
+#### Key Derivation
+
+###### key material
+
+**key_file:** random 256 bits stored in plaintext on each site, keep this hidden from any third party.
+
+**master_passphrase:** strong user chosen passphrase.
+
+**block_salt:** randomly generated salt per block. Protects us from nonce reuse and input to pbkdf2.
+
+**block_iters:** input to pbkdf2
+
+###### kdf algorithm
 
 ```haskell
-gitdb_key <- USER INPUT  -- e.g. '/a/b/c')
-plaintext <- USER INPUT
+INPUT: key_file          -- 256b key file from site (not stored in GitDB)
+INPUT: master_passphrase -- read from users mind
+INPUT: block_salt        -- random salt per block
+INPUT: block_iters       -- extracted from Block
 
-key_salt <- generate_random_salt -- random 256bit salt
-persist_key_salt(gitdb_key, key_salt) -- overwrites old key_salt for this GitDB key
+pbkdf2_key <- PBKDF2(
+  algo: SHA_256,
+  pass: master_passphrase,
+  salt: block_salt,
+  iters: block_iters,
+  length: 256
+)
 
-key <- generated as outlined in the Key Derivation section above
+key <- pbkdf2_key XOR key_file
 
-ciphertext <- AEAD(
+OUTPUT: key
+```
+
+#### Encryption
+
+```haskell
+INPUT: key_file          -- 256b key file from site (not stored in GitDB)
+INPUT: master_passphrase -- read from users mind
+INPUT: plaintext         -- plaintext data to encrypt
+
+block_salt <- rand(256)  -- random 256bit salt
+block_iters <- 1000000   -- u32 read from config
+
+-- See above for kdf algorithm
+key <- kdf(key_file, master_passphrase, block_salt, block_iters)
+
+ciphertext <- AEAD_encrypt(
   algo: CHACHA20_POLY1305
   secret_key: key,
-  nonce: 0, -- random salts to give us unique secret_keys, we never encrypt with a key twice.
-  ad: SHA_256(gitdb_key) | key_salt -- TODO: consider what data would be prudent to add
+  nonce: 0, -- nonce not used, see above section on nonce reuse
+  ad: block_salt ++ block_iters
 )
+
+block <- block_iters ++ block_salt ++ ciphertext
+--     | 32bit uint  |  256bit salt | <n>bit ciphertext |       
+
+OUTPUT: block
 ```
+
+
+
+#### Decryption
+
+```haskell
+INPUT: key_file          -- 256b key file from site (not stored in GitDB)
+INPUT: master_passphrase -- read from users mind
+INPUT: block             -- block to decrypt
+
+block_iters <- block[0..32]
+block_salt <- block[32..(32 + 256)]
+ciphertext <- block[(32+256)..block.len()]
+
+-- See above for kdf algorithm
+key <- kdf(key_file, master_passphrase, block_salt, block_iters)
+
+plaintext <- AEAD_decrypt(
+  algo: CHACHA20_POLY1305
+  secret_key: key,
+  nonce: 0, -- nonce not used, see above section on nonce reuse
+  ad: block_salt ++ block_iters
+)
+
+OUTPUT: plaintext
+```
+
+
+
