@@ -301,3 +301,68 @@ OUTPUT: plaintext
 
 
 
+## Automating Merge Conflicts with CRDT's
+
+GitDB is meant to be used in an offline first context, this necessarily means that conflicts are bound to happen and managing these conflicts in an unintruisive way is paramount to building useful applications on top of GitDB.
+
+GitDB leans heavily on the fantastic [Ditto](https://github.com/alex-shapiro/ditto) collection of CRDT data structures. As long as you only use Ditto structures, conflicts will be handled automatically for you.
+
+Unfortunately, Ditto does not help us in choosing a site identifier
+
+### Assigning Site ID's
+
+Random u32 checked against existing site identifiers, that's all we've got right now.
+
+This gives us a probability of collision between two new offline devices at a bit over $10^{-10}$. Not great, but it'll do for now.
+
+### Merge Procedure
+
+#### Remote Ordering
+
+The order of pushing to remotes is meaningfully, if clients don't all iterate in the same order there is potential for remotes to never converge to each other.
+
+For example consider a situation with two sites and two remotes and both sites choose different first push remotes. In the case where both sites differ in commit history, you will enter a situation of repeated indefinite merging and pushing (assuming the worst case where operations are happening in lockstep and merges by sites differ in some way).
+
+To avoid this, we iterate remotes in the same order on each site, on conflict, we stop iterating, merge the conflict and restart the push iteration from the beginning.
+
+In pseudo code:
+
+```rust
+let repo = git.open_repo("$GIT_ROOT");
+
+let push_succeded = false;
+while !push_succeeded {
+    push_succeeded = true;
+    for remote in repo.remotes.sort().iter() {
+        remote.fetch();
+        repo.merge(remote.refspec())
+        if repo.index.has_conflict() {
+            // <handle_conflict>
+            push_succeeded = false;
+            break;
+        }
+    }
+}
+```
+
+#### Conflict Resolution
+
+##### Case
+
+modified `A:/a`
+
+modified `B:/a`
+
+##### resolution
+
+`encrypt(output="/a", plain=merge(decrypt(A:/a), decrypt(B:/a)))`
+
+##### Case
+
+modified `A:/a`
+
+deleted `B:/a`
+
+##### resolution
+
+keep `A:/a`
