@@ -1,25 +1,35 @@
-use std::path::Path;
-use std::fs::File;
+use std::path;
+use std::fs;
 use std::io::{stdin, Read, Write, stdout};
 
 use ring::{aead, digest, pbkdf2};
 use ring::rand::{SecureRandom, SystemRandom};
 
-use secret_meta::Meta;
-use encoding;
+use db_error::{DBErr};
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Config {
+    version: u8,
+    pbkdf2_iters: u32,
+    pbkdf2_salt: [u8; 256/8],
+    consumed: bool
+}
+
+#[derive(Debug)]
 pub struct Session {
     password: Option<String>
 }
 
+#[derive(Debug, PartialEq)]
 pub struct Plaintext {
     pub data: Vec<u8>,
-    pub meta: Meta
+    pub config: Config
 }
 
+#[derive(Debug, PartialEq)]
 pub struct Encrypted {
-    data: Vec<u8>,
-    meta: Meta
+    pub data: Vec<u8>,
+    pub config: Config
 }
 
 impl Session {
@@ -29,9 +39,9 @@ impl Session {
         }
     }
 
-    pub fn pass(&mut self) -> Result<String, String> {
-        if let Some(pass) = self.password.clone() {
-            Ok(pass)
+    pub fn pass(&mut self) -> Result<String, DBErr> {
+        if let Some(ref pass) = self.password {
+            Ok(pass.clone())
         } else {
             let pass = read_stdin("master passphrase", true)?;
             self.password = Some(pass.clone());
@@ -40,74 +50,210 @@ impl Session {
     }
 }
 
+impl Config {
+    pub fn fresh_default() -> Result<Config, DBErr> {
+        let mut salt = [0u8; 256/8];
+
+        // TAI: Should this rng live in a session so we don't have to recreate it each time?
+        SystemRandom::new()
+            .fill(&mut salt)
+            .map_err(|_| DBErr::Crypto(String::from("Failed to generate random pbkdf2 salt")))?;
+
+        Ok(Config {
+            version: 0,
+            pbkdf2_iters: 100000,
+            pbkdf2_salt: salt,
+            consumed: false
+        })
+    }
+
+    pub fn serialized_byte_count() -> usize {
+        1 + 32 / 8 + 256 / 8 // version + pbkdf2 iters + pbkdf2 salt
+    }
+
+    /// Parses a config from some bytes
+    ///
+    /// Reads just enough of the prefix of the given bytes to parse a `Config`
+    /// does not look past what's required to parse a valid `Config`
+    ///
+    /// format: [ version (1 byte) | iters (4 bytes) | salt (256 / 8 = 32 bytes) ]
+    pub fn from_bytes(bytes: &[u8]) -> Result<Config, DBErr> {
+        if bytes.len() == 0 {
+            return Err(DBErr::Parse(String::from("Nothing to parse (bytes.len() == 0)")));
+        }
+
+        let version = bytes[0];
+
+        match version {
+            0 => {
+                let expected_bytes = Config::serialized_byte_count();
+                if bytes.len() < expected_bytes {
+                    Err(DBErr::Parse(format!("Not enough bytes to parse config: {} < {}", bytes.len(), expected_bytes)))
+                } else {
+                    let iters = bytes_to_u32(&[bytes[1], bytes[2], bytes[3], bytes[4]]);
+                    let mut salt = [0u8; 256/8];
+                    salt.copy_from_slice(&bytes[(1+4)..(1+4+(256/8))]);
+                    Ok(Config {
+                        version: 0,
+                        pbkdf2_iters: iters,
+                        pbkdf2_salt: salt,
+                        consumed: true
+                    })
+                }
+            },
+            _ => Err(DBErr::Version(format!("Unknown Config version: {}", version)))
+        }
+    }
+
+    /// Serializes config to bytes
+    /// - only config data needed for decryption is serialized
+    ///
+    /// format: [ version (1 byte) | iters (4 bytes) | salt (256 / 8 = 32 bytes) ]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let byte_count = Config::serialized_byte_count();
+        let mut bytes: Vec<u8> = Vec::with_capacity(byte_count);
+        bytes.push(self.version);
+        bytes.extend(u32_to_bytes(self.pbkdf2_iters).iter());
+        bytes.extend(self.pbkdf2_salt.iter());
+        
+        assert_eq!(bytes.capacity(), byte_count); // allocation sanity check
+
+        bytes
+    }
+}
+
 impl Plaintext {
-    pub fn encrypt(&self, sess: &mut Session) -> Result<Encrypted, String> {
+    pub fn encrypt(&mut self, sess: &mut Session) -> Result<Encrypted, DBErr> {
         let pass = sess.pass()?;
+
+        if self.config.consumed {
+            return Err(DBErr::Crypto(String::from("Attempted to encrypt with an already consumed config")));
+        }
+
+        assert_eq!(self.config.consumed, false);
+        let encrypted_data = encrypt(&pass.as_bytes(), &self.data, &mut self.config)?;
+        assert_eq!(self.config.consumed, true);
+        
         let encrypted = Encrypted {
-            data: encrypt(&pass.as_bytes(), &self.data, &self.meta)?,
-            meta: self.meta.clone()
+            data: encrypted_data.to_vec(),
+            config: self.config.clone()
         };
         Ok(encrypted)
     }
 }
 
 impl Encrypted {
-    pub fn read(path: &Path) -> Result<Encrypted, String> {
-        let mut f = File::open(path)
-            .map_err(|e| format!("Failed to open {:?}: {:?}", path, e))?;
+    pub fn read(file_path: &path::Path) -> Result<Encrypted, DBErr> {
+        let mut f = fs::File::open(file_path)
+            .map_err(DBErr::IO)?;
+        
+        let mut config_bytes = vec![0u8; Config::serialized_byte_count()];
+        f.read_exact(&mut config_bytes)
+            .map_err(DBErr::IO)?;
+        let config = Config::from_bytes(&config_bytes)?;
 
         let mut data = Vec::new();
         f.read_to_end(&mut data)
-            .map_err(|e| format!("Failed read to {:?}: {:?}", path, e))?;
-
-        let meta = Meta::from_toml(&path.with_extension("toml"))?;
+            .map_err(DBErr::IO)?;
 
         Ok(Encrypted {
             data: data,
-            meta: meta
+            config: config
         })
     }
     
-    pub fn write(&self, path: &Path) -> Result<(), String> {
-        File::create(path)
-            .map_err(|e| format!("Failed to create {:?}: {:?}", path, e))
-            .and_then(|mut f| {
-                // write encrypted data to disk
-                f.write_all(&self.data)
-                    .map_err(|e| format!("Failed write to {:?}: {:?}", path, e))
-            })
-            .and_then(|_| {
-                // write encryption metadata to disk
-                self.meta.write_toml(&path.with_extension("toml"))
+    pub fn write(&self, file_path: &path::Path) -> Result<(), DBErr> {
+        let mut f = fs::File::create(file_path)
+            .map_err(DBErr::IO)?;
+
+        f.write_all(&self.config.to_bytes())
+            .or_else(|e| {
+                fs::remove_file(file_path)
+                    .map_err(DBErr::IO)?;
+                Err(DBErr::IO(e))
+            })?;
+        
+        f.write_all(&self.data)
+            .or_else(|e| {
+                fs::remove_file(file_path)
+                    .map_err(DBErr::IO)?;
+                Err(DBErr::IO(e))
             })
     }
 
-    pub fn decrypt(&self, sess: &mut Session) -> Result<Plaintext, String> {
+    pub fn decrypt(&self, sess: &mut Session) -> Result<Plaintext, DBErr> {
         let pass = sess.pass()?;
+        let plaintext_data = decrypt(&pass.as_bytes(), &self.data, &self.config)?;
         let plaintext = Plaintext {
-            data: decrypt(&pass.as_bytes(), &self.data, &self.meta)?,
-            meta: self.meta.clone()
+            data: plaintext_data.to_vec(),
+            config: self.config.clone()
         };
         Ok(plaintext)
     }
 }
 
-pub fn pbkdf2(pass: &[u8], keylen: u32, meta: &Meta) -> Result<Vec<u8>, String> {
-    if meta.pbkdf2.algo != "Sha256" {
-        panic!("only 'Sha256' implemented for pbkdf2");
-    }
-    if keylen < 128 {
-        panic!("key is too short! keylen (bits): {}", keylen);
-    }
-    if keylen % 8 != 0 {
-        panic!("Key length should be a multiple of 8, got: {}", keylen);
+/// Generate a 256 bit key derived through PBKDF2_SHA256
+pub fn pbkdf2(pass: &[u8], config: &Config) -> Result<[u8; 256 / 8], DBErr> {
+    if config.version != 0 {
+        return Err(DBErr::Version(format!("Config version {} not supported", config.version)));
     }
 
     let pbkdf2_algo = &digest::SHA256;
-    let salt = encoding::decode(&meta.pbkdf2.salt)?;
-    let mut key = vec![0u8; (keylen / 8) as usize];
-    pbkdf2::derive(pbkdf2_algo, meta.pbkdf2.iters, &salt, &pass, &mut key);
+    let mut key = [0u8; 256 / 8];
+    pbkdf2::derive(pbkdf2_algo, config.pbkdf2_iters, &config.pbkdf2_salt, &pass, &mut key);
     Ok(key)
+}
+
+pub fn encrypt(pass: &[u8], data: &[u8], config: &mut Config) -> Result<Vec<u8>, DBErr> {
+    // TAI: short ciphertexts may give away useful length information to an attacker, consider padding plaintext before encrypting
+
+    if config.version != 0 {
+        return Err(DBErr::Version(format!("Config version {} not supported", config.version)));
+    }
+
+    if config.consumed {
+        return Err(DBErr::Crypto(String::from("ATTEMPTING TO ENCRYPT WITH A SALT WHICH HAS ALREADY BEEN CONSUMED")));
+    }
+
+    config.consumed = true;
+
+    let aead_algo = &aead::CHACHA20_POLY1305;
+    
+    let pbkdf2_key = pbkdf2(pass, &config)?;
+    // TODO: implement key file step
+
+    let seal_key = aead::SealingKey::new(aead_algo, &pbkdf2_key)
+        .map_err(|_| DBErr::Crypto(String::from("Failed to generate a sealing key")))?;
+
+    let mut in_out = Vec::with_capacity(data.len() + seal_key.algorithm().tag_len());
+    in_out.extend(data.iter());
+    in_out.extend(vec![0u8; seal_key.algorithm().tag_len()]);
+    let ad = config.to_bytes();
+    let nonce = [0u8; 96 / 8]; // see crypto design doc (we never encrypt with the same key twice)
+
+    aead::seal_in_place(&seal_key, &nonce, &ad, &mut in_out, seal_key.algorithm().tag_len())
+        .map_err(|_| DBErr::Crypto(String::from("Failed to encrypt with AEAD")))?;
+
+    Ok(in_out)
+}
+
+pub fn decrypt(pass: &[u8], encrypted_data: &[u8], config: &Config) -> Result<Vec<u8>, DBErr> {
+    assert!(config.consumed);
+    let aead_algo = &aead::CHACHA20_POLY1305;
+    let key = pbkdf2(pass, &config)?;
+    let opening_key = aead::OpeningKey::new(aead_algo, &key)
+        .map_err(|_| DBErr::Crypto(String::from("Failed to create key when decrypting")))?;
+
+    let mut in_out = Vec::new();
+    in_out.extend(encrypted_data.iter());
+
+    let ad = config.to_bytes();
+    let nonce = [0u8; 96 / 8]; // see crypto design doc (we never encrypt with the same key twice)
+
+    let plaintext = aead::open_in_place(&opening_key, &nonce, &ad, 0, &mut in_out)
+        .map_err(|_| DBErr::Crypto(String::from("Failed to decrypt")))?;
+
+    Ok(plaintext.to_vec())
 }
 
 pub fn u32_to_bytes(i: u32) -> [u8; 4] {
@@ -129,97 +275,135 @@ pub fn bytes_to_u32(xs: &[u8; 4]) -> u32 {
         | (xs[3] as u32)
 }
 
-pub fn encrypt(pass: &[u8], data: &[u8], meta: &Meta) -> Result<Vec<u8>, String> {
-    let aead_algo = match meta.aead.algo.as_str() {
-        "ChaCha20-Poly1305" => &aead::CHACHA20_POLY1305,
-        _ => panic!("AEAD supports only 'ChaCha20-Poly1305'")
-    };
-
-    if meta.plaintext.min_bits % 8 != 0 {
-        panic!("Plaintext min_bits must be a multiple of 8");
-    }
-
-    let key = pbkdf2(pass, meta.aead.keylen, &meta)?;
-    let seal_key = aead::SealingKey::new(aead_algo, &key)
-        .map_err(|e| format!("Failed to create sealing key: {:?}", e))?;
-
-    let pad_bits = ((meta.plaintext.min_bits as i64) - (data.len() * 8) as i64).max(0) as u32;
-    let pad_data = generate_rand_bits(pad_bits)?;
-    let pad_bits_data = u32_to_bytes(pad_bits);
-    let mut in_out = Vec::with_capacity(
-        pad_bits_data.len()
-            + pad_data.len()
-            + data.len()
-            + seal_key.algorithm().tag_len()
-    );
-    in_out.extend(pad_bits_data.iter());
-    in_out.extend(pad_data.iter());
-    in_out.extend(data.iter());
-    in_out.extend(vec![0u8; seal_key.algorithm().tag_len()]);
-    let ad: &[u8] = &meta.to_toml_bytes()?;
-    let nonce = encoding::decode(&meta.aead.nonce)?;
-
-    aead::seal_in_place(&seal_key, &nonce, &ad, &mut in_out, seal_key.algorithm().tag_len())
-        .map_err(|e| format!("Failed to seal: {:?}", e))?;
-
-    Ok(in_out)
-}
-
-pub fn decrypt(pass: &[u8], encrypted_data: &[u8], meta: &Meta) -> Result<Vec<u8>, String> {
-    if meta.aead.algo != "ChaCha20-Poly1305" {
-        panic!("only 'ChaCha20-Poly1305' implemented for aead");
-    }
-
-    let aead_algo = &aead::CHACHA20_POLY1305;
-
-    let key = pbkdf2(pass, meta.aead.keylen, &meta)?;
-    let opening_key = aead::OpeningKey::new(aead_algo, &key).unwrap();
-
-    let mut in_out = Vec::new();
-    in_out.extend(encrypted_data.iter());
-
-    let ad: &[u8] = &meta.to_toml_bytes()?;
-    let nonce = encoding::decode(&meta.aead.nonce)?;
-
-    let plaintext = aead::open_in_place(&opening_key, &nonce, &ad, 0, &mut in_out)
-        .map_err(|_| String::from("Failed to decrypt"))
-        .map(|plaintext| plaintext.to_vec())?;
-
-    if plaintext.len() < 4 {
-        panic!("We expect at least 4 bytes of plaintext for pad bits length");
-    }
-
-    // first 4 bytes is a u32 with length of paddding
-    let pad_bits = bytes_to_u32(
-        &[plaintext[0], plaintext[1], plaintext[2], plaintext[3]]
-    );
-    
-    if plaintext.len() < (4 + pad_bits / 8) as usize {
-        panic!("We expect at least 4 + pad_bits / 8 bytes of data in plaintext");
-    }
-    Ok(plaintext[(4 + (pad_bits / 8) as usize)..].to_vec())
-}
-
-pub fn read_stdin(prompt: &str, obscure_input: bool) -> Result<String, String> {
+pub fn read_stdin(prompt: &str, obscure_input: bool) -> Result<String, DBErr> {
     // TODO: for unix systems, do something like this: https://stackoverflow.com/a/37416107
     // TODO: obscure_input is ignored currently
 
     print!("{}: ", prompt);
     stdout().flush().ok();
-    let mut pass = String::new();
+    let mut pass = String::with_capacity(16);
     stdin().read_line(&mut pass)
-        .map_err(|e| format!("Error reading password from stdin: {}", e))
-        .map(|_| pass.trim().to_string())
+        .map_err(DBErr::IO)?;
+    pass.trim();
+    Ok(pass)
 }
 
-pub fn generate_rand_bits(n: u32) -> Result<Vec<u8>, String> {
-    if n % 8 != 0 {
-        return Err(format!("Bits to generate must be a multiple of 8, got: {}", n));
+#[cfg(test)]
+mod test {
+    extern crate tempfile;
+    use super::*;
+    
+    #[test]
+    fn fresh_config_is_not_consumed() {
+        let conf = Config::fresh_default().unwrap();
+        assert_eq!(conf.consumed, false);
     }
 
-    let mut buff = vec![0u8; (n / 8) as usize ];
-    let rng = SystemRandom::new();
-    rng.fill(&mut buff)
-        .map_err(|e| format!("Failed to generate random bits: {:?}", e))?;
-    Ok(buff)
+    #[test]
+    fn config_is_same_but_consumed_after_converted_to_bytes() {
+        let conf1 = Config::fresh_default().unwrap();
+        let conf2 = Config::from_bytes(&conf1.to_bytes()).unwrap();
+        assert_eq!(conf1.consumed, false);
+        assert_eq!(conf2.consumed, true);
+        assert_eq!(conf1.version, conf2.version);
+        assert_eq!(conf1.pbkdf2_iters, conf2.pbkdf2_iters);
+        assert_eq!(conf1.pbkdf2_salt, conf2.pbkdf2_salt);
+    }
+
+    #[test]
+    fn config_fails_to_deserialize_bad_version() {
+        let mut conf = Config::fresh_default().unwrap();
+        conf.version = 183;
+        match Config::from_bytes(&conf.to_bytes()).unwrap_err() {
+            DBErr::Version(_) => ":)",
+            _ => panic!("should have err'd with a version error")
+        };
+    }
+
+    #[test]
+    fn config_fails_to_deserialize_bad_bytes() {
+        match Config::from_bytes(&[0]).unwrap_err() {
+            DBErr::Parse(_) => ":)",
+            _ => panic!("should have err'd with a parse error")
+        };
+    }
+
+    #[test]
+    fn plaintext_encrypt_decrypt() {
+        let msg = "I love you";
+        let mut plain = Plaintext {
+            data: msg.as_bytes().to_vec(),
+            config: Config::fresh_default().unwrap()
+        };
+        let mut sess = Session {
+            password: Some(String::from(";)"))
+        };
+
+        let encrypted = plain.encrypt(&mut sess).unwrap();
+        assert_eq!(plain.config.consumed, true);
+        assert_eq!(plain.config.version, encrypted.config.version);
+        assert_eq!(plain.config.pbkdf2_iters, encrypted.config.pbkdf2_iters);
+        assert_eq!(plain.config.pbkdf2_salt, encrypted.config.pbkdf2_salt);
+        
+        match plain.encrypt(&mut sess).unwrap_err() {
+            DBErr::Crypto(_) => ":)",
+            _ => panic!("Encrypting with a consumed config should fail!")
+        };
+
+        let plain2 = encrypted.decrypt(&mut sess).unwrap();
+        assert_eq!(plain2.config.consumed, true);
+        assert_eq!(plain.config.version, plain2.config.version);
+        assert_eq!(plain.config.pbkdf2_iters, plain2.config.pbkdf2_iters);
+        assert_eq!(plain.config.pbkdf2_salt, plain2.config.pbkdf2_salt);
+
+        let decrypted_string = String::from_utf8(plain2.data).unwrap();
+        assert_eq!(decrypted_string, "I love you");
+    }
+
+    #[test]
+    fn encrypt_decrypt_file_io() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("secret_note.txt");
+        let msg = "she's becoming a peaceful one";
+
+        let mut plain = Plaintext {
+            data: msg.as_bytes().to_vec(),
+            config: Config::fresh_default().unwrap()
+        };
+
+        let mut sess = Session {
+            password: Some(String::from(";)"))
+        };
+
+        let encrypted = plain.encrypt(&mut sess)
+            .unwrap();
+        
+        encrypted.write(&file_path).unwrap();
+
+        let encrypted2 = Encrypted::read(&file_path)
+            .unwrap();
+        assert_eq!(encrypted, encrypted2);
+        
+        let plain2 = encrypted2
+            .decrypt(&mut sess)
+            .unwrap();
+        
+        assert_eq!(plain, plain2);
+        
+        let decrypted_string = String::from_utf8(plain2.data).unwrap();
+        assert_eq!(decrypted_string, "she's becoming a peaceful one");
+    }
+
+    #[test]
+    fn u32_bytes_conversions() {
+        assert_eq!(u32_to_bytes(65), [0, 0, 0, 0x41]);
+        assert_eq!(u32_to_bytes(48023143), [0x02, 0xDC, 0xC6, 0x67]);
+        assert_eq!(u32_to_bytes(0x12345678), [0x12, 0x34, 0x56, 0x78]);
+        
+        assert_eq!(bytes_to_u32(&[0, 0, 0, 0x41]), 65);
+        assert_eq!(bytes_to_u32(&[0x02, 0xDC, 0xC6, 0x67]), 48023143);
+        assert_eq!(bytes_to_u32(&[0x12, 0x34, 0x56, 0x78]), 0x12345678);
+
+        assert_eq!(bytes_to_u32(&u32_to_bytes(35230)), 35230);
+    }
 }
