@@ -163,6 +163,8 @@ impl Config {
 
 impl Plaintext {
     pub fn encrypt(&mut self, sess: &mut Session) -> Result<Block, DBErr> {
+        // TAI: compress before encrypt
+
         if self.config.consumed {
             return Err(DBErr::Crypto(String::from("Attempted to encrypt with an already consumed config")));
         }

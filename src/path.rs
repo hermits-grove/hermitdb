@@ -85,7 +85,13 @@ impl<'a> Path<'a> {
         })
     }
 
-    pub fn to_str(&self) -> String {
+    fn is_special_char(c: char) -> bool {
+        c == '/' || c == '\\'
+    }
+}
+
+impl<'a> ToString for Path<'a> {
+    fn to_string(&self) -> String {
         if self.components.len() == 0 {
             // handle root path case
             return String::from("/");
@@ -101,10 +107,6 @@ impl<'a> Path<'a> {
         assert_eq!(path.capacity(), predicted_cap); // sanity check that our math was right
         path
     }
-
-    fn is_special_char(c: char) -> bool {
-        c == '/' || c == '\\'
-    }
 }
 
 #[cfg(test)]
@@ -116,7 +118,7 @@ mod tests {
         let r1 = Path::root();
         let r2 = Path::new("/").unwrap();
         assert_eq!(r1, r2);
-        assert_eq!(r1.to_str(), "/");
+        assert_eq!(r1.to_string(), "/");
     }
 
     #[test]
@@ -141,7 +143,7 @@ mod tests {
     fn to_and_from_str() {
         let test_paths = ["/", "/a", r"/\/", r"/\\", "/ ", "/a/b/c", r"/a\\b/c\\"];
         for path in test_paths.iter() {
-            assert_eq!(Path::new(&path).unwrap().to_str(), *path);
+            assert_eq!(Path::new(&path).unwrap().to_string(), *path);
         }
     }
 }
