@@ -9,3 +9,4 @@ pub mod encoding;
 pub mod git_creds;
 pub mod db;
 pub mod path;
+pub mod block;

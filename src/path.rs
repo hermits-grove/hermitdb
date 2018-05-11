@@ -1,13 +1,40 @@
+extern crate ring;
+use std;
+use std::borrow::{Cow, Borrow};
+
 use db_error::{DBErr};
+use encoding;
+
+#[derive(Debug, PartialEq, Clone, Hash, Serialize, Deserialize)]
+pub struct PathComp<'a>(Cow<'a, str>);
+
+impl<'a> Eq for PathComp<'a> {}
 
 #[derive(Debug, PartialEq)]
 pub struct Path<'a> {
-    components: Vec<&'a str>,
+    components: Vec<PathComp<'a>>,
+}
+
+impl<'a> PathComp<'a> {
+    pub fn escape<'b>(s: &str) -> PathComp<'b> {
+        let mut escaped = String::with_capacity(s.len());
+        for c in s.chars() {
+            if Path::is_special_char(c) {
+                escaped.push('\\');
+            }
+            escaped.push(c);
+        }
+        PathComp(Cow::Owned(escaped))
+    }
+
+    pub fn value(&self) -> &str {
+        self.0.borrow()
+    }
 }
 
 impl<'a> Path<'a> {
     /// Construct the root path: "/"
-    pub fn root() -> Path<'a> {
+    pub fn root<'b>() -> Path<'b> {
         Path {
             components: Vec::new()
        }
@@ -40,9 +67,8 @@ impl<'a> Path<'a> {
             });
         }
 
-        // TAI: store components escaped instead of going through the unescaping/escaping ceremony
         // TAI: is there a way to do this with no copy?
-        let mut components: Vec<&'a str> = Vec::new();
+        let mut components: Vec<PathComp<'a>> = Vec::new();
         let mut escaping = false;
         let mut comp_start = 1;
         let mut pos = 1;
@@ -60,7 +86,7 @@ impl<'a> Path<'a> {
                 if pos - comp_start == 0 {
                     return Err(DBErr::Parse(format!("Invalid path \"{}\": attempted to create a path with an empty component", s)));
                 }
-                components.push(&s[comp_start..pos]);
+                components.push(PathComp(Cow::Borrowed(&s[comp_start..pos])));
                 comp_start = pos + 1; // +1 skips the `/` seperator
             }
 
@@ -78,11 +104,26 @@ impl<'a> Path<'a> {
             return Err(DBErr::Parse(format!("Invalid path \"{}\": path must not end in '/'", s)));
         }
 
-        components.push(&s[comp_start..pos]);
+        components.push(PathComp(Cow::Borrowed(&s[comp_start..pos])));
 
         Ok(Path {
             components: components
         })
+    }
+
+    pub fn derive_filepath(&self, path_salt: &[u8]) -> std::path::PathBuf {
+        let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
+        ctx.update(&path_salt);
+        // TAI: consider avoiding building the path string here
+        //      we should be able to update the ctx with path components
+        ctx.update(&self.to_string().into_bytes());
+        let digest = ctx.finish();
+        let encoded_hash = encoding::encode(&digest.as_ref());
+        let (dir_part, file_part) = encoded_hash.split_at(2);
+        let filepath = std::path::PathBuf::from(dir_part)
+            .join(file_part);
+
+        filepath
     }
 
     fn is_special_char(c: char) -> bool {
@@ -98,11 +139,14 @@ impl<'a> ToString for Path<'a> {
         }
 
         // components are stored escaped
-        let predicted_cap = self.components.iter().map(|c| 1 + c.len()).sum();
+        let predicted_cap = self.components
+            .iter()
+            .map(|c| 1 + c.0.len())
+            .sum();
         let mut path = String::with_capacity(predicted_cap);
         for comp in self.components.iter() {
             path.push('/');
-            path.push_str(comp);
+            path.push_str(&comp.0);
         }
         assert_eq!(path.capacity(), predicted_cap); // sanity check that our math was right
         path
@@ -127,10 +171,12 @@ mod tests {
         assert_eq!(root.components.len(), 0);
         
         let p1 = Path::new("/a").unwrap();
-        assert_eq!(p1.components, &["a"]);
+        assert_eq!(p1.components, &[PathComp::escape("a")]);
 
         let p2 = Path::new(r"/a\\b/c\/").unwrap();
-        assert_eq!(p2.components, &[r"a\\b", r"c\/"]);
+        assert_eq!(p2.components, &[
+            PathComp::escape(r"a\b"), PathComp::escape(r"c/")
+        ]);
 
         let bad_paths = &["", "//a", "/a/", r"/a\b", r"/\"];
         for p in bad_paths.iter() {
@@ -146,13 +192,36 @@ mod tests {
             assert_eq!(Path::new(&path).unwrap().to_string(), *path);
         }
     }
+
+    #[test]
+    fn derive_filepath() {
+        let path_salt = "$";
+        let filepath = Path::new("/a/b/c")
+            .unwrap()
+            .derive_filepath(&path_salt.as_bytes());
+
+        //test vector comes from the python code:
+        //>>> import hashlib
+        //>>> hashlib.sha256(b"$/a/b/c").hexdigest()
+        //'63b2c7879bd2a4d08a4671047a19fdd4c88e580efb66d853045a210eea0afe79'
+        let expected = std::path::PathBuf::from("63")
+            .join("b2c7879bd2a4d08a4671047a19fdd4c88e580efb66d853045a210eea0afe79");
+        
+        assert_eq!(filepath, expected);
+    }
+
+    #[test]
+    fn path_comp_escape() {
+        let test_vectors = [
+            ("/", r"\/"),
+            (r"\", r"\\"),
+            (r"//\\", r"\/\/\\\\"),
+            (r"a/b/c", r"a\/b\/c"),
+            (r"a _^78!Ms-", r"a _^78!Ms-")
+        ];
+
+        for &(raw, escaped) in test_vectors.iter() {
+            assert_eq!(PathComp::escape(raw).0, escaped);
+        }
+    }
 }
-
-
-
-
-
-
-
-
-
