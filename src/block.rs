@@ -1,7 +1,16 @@
 extern crate ditto;
+extern crate serde;
+extern crate bincode;
+
+use self::serde::{Serialize, Deserialize};
 
 use db_error::{DBErr};
 use path;
+
+pub trait Block<'a>: Serialize + Deserialize<'a> {
+    fn merge(&mut self, other: &Self) -> Result<(), DBErr>;
+}
+
 
 #[derive(Clone, Debug, PartialEq, Hash, Serialize, Deserialize)]
 pub enum TreeEntryKind {
@@ -11,11 +20,8 @@ pub enum TreeEntryKind {
 
 impl Eq for TreeEntryKind {}
 
-pub trait Block {
-    fn merge(&mut self, other: &Self) -> Result<(), DBErr>;
-}
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TreeBlock {
     entries: ditto::set::Set<TreeEntry>
 }
@@ -30,7 +36,7 @@ pub struct TreeEntry {
 
 impl Eq for TreeEntry {}
 
-impl Block for TreeBlock {
+impl<'a> Block<'a> for TreeBlock {
     fn merge(&mut self, other: &Self) -> Result<(), DBErr>{
         self.entries.merge(other.entries.state())
             .map_err(DBErr::CRDT)
@@ -228,6 +234,32 @@ mod test {
             let expected: HashSet<TreeEntry> =
                 [TreeEntry::tree("users"), TreeEntry::tree("passwords")].iter().cloned().collect();
             assert_eq!(ta.entries.local_value(), expected);
+        }
+    }
+
+    #[test]
+    fn serde() {
+        let mut tree = TreeBlock::empty(Some(1)).unwrap();
+        {
+            let bytes: Vec<u8> = bincode::serialize(&tree).unwrap();
+            let decoded_tree: TreeBlock = bincode::deserialize(&bytes[..]).unwrap();
+            assert_eq!(tree, decoded_tree);
+        }
+
+        tree.add(TreeEntry::tree("users")).unwrap();
+        {
+            let bytes: Vec<u8> = bincode::serialize(&tree).unwrap();
+            let decoded_tree: TreeBlock = bincode::deserialize(&bytes[..]).unwrap();
+            assert_eq!(decoded_tree.len(), 1);
+            assert_eq!(tree, decoded_tree);
+        }
+
+        tree.add(TreeEntry::tree("wifi_passwords")).unwrap();
+        {
+            let bytes: Vec<u8> = bincode::serialize(&tree).unwrap();
+            let decoded_tree: TreeBlock = bincode::deserialize(&bytes[..]).unwrap();
+            assert_eq!(decoded_tree.len(), 2);
+            assert_eq!(tree, decoded_tree);
         }
     }
 }
