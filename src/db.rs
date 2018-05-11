@@ -1,6 +1,5 @@
 extern crate time;
 extern crate git2;
-extern crate ring;
 
 use self::git2::Repository;
 
@@ -11,7 +10,6 @@ use db_error::{DBErr};
 use crypto;
 use git_creds;
 use path;
-use encoding;
 
 pub struct DB {
     pub db_root: std::path::PathBuf,
@@ -55,30 +53,18 @@ impl DB {
 
     fn path_salt(&self, mut sess: &mut crypto::Session) -> Result<Vec<u8>, DBErr> {
         let path_salt_file = self.db_root.join("path_salt");
-        let path_salt = crypto::Block::read(&path_salt_file)
+        let path_salt = crypto::Encrypted::read(&path_salt_file)
             ?.decrypt(&mut sess)
             ?.data;
 
         Ok(path_salt)
     }
 
-    fn derive_filepath_from_path(&self, path: &path::Path, mut sess: &mut crypto::Session) -> Result<std::path::PathBuf, DBErr> {
-        let mut ctx = ring::digest::Context::new(&ring::digest::SHA256);
-        ctx.update(&self.path_salt(&mut sess)?);
-        ctx.update(&path.to_string().into_bytes());
-        let digest = ctx.finish();
-        let encoded_hash = encoding::encode(&digest.as_ref());
-        let (dir, file) = encoded_hash.split_at(2);
-        let filepath = self.db_root.join("cryptic").join(dir).join(file);
-
-        Ok(filepath)
-    }
-
 //    pub fn tree_block(&self, path: &path::Path) {
 //        
 //    }
 //
-//    pub fn put(&self, path: &path::Path, block: &crypto::Block, mut sess: &mut crypto::Session) -> Result<(), DBErr> {
+//    pub fn put(&self, path: &path::Path, block: &crypto::Encrypted, mut sess: &mut crypto::Session) -> Result<(), DBErr> {
 //        let filepath = self.derive_filepath_from_path(&path);
 //        block.write(&filepath)?; // will fail if file already exists
 //
@@ -393,7 +379,7 @@ mod test {
         let remotes_filepath = git_root.join("remotes");
         assert!(remotes_filepath.is_file());
 
-        let remotes_plain = crypto::Block::read(&remotes_filepath)
+        let remotes_plain = crypto::Encrypted::read(&remotes_filepath)
             .unwrap()
             .decrypt(&mut sess)
             .unwrap();
@@ -406,7 +392,7 @@ mod test {
     }
 
     #[test]
-    fn derive_filepath_from_path() {
+    fn path_salt_used_correctly() {
         let dir = tempfile::tempdir().unwrap();
         let mut sess = crypto::Session::new(dir.path());
         sess.create_key_file().unwrap();
@@ -424,17 +410,15 @@ mod test {
             .unwrap();
 
         assert_eq!(db.path_salt(&mut sess).unwrap(), "$".as_bytes());
-        let filepath = db
-            .derive_filepath_from_path(&path::Path::new("/a/b/c").unwrap(), &mut sess)
-            .unwrap();
+        let filepath = path::Path::new("/a/b/c")
+            .unwrap()
+            .derive_filepath(&db.path_salt(&mut sess).unwrap());
 
         //test vector comes from the python code:
         //>>> import hashlib
         //>>> hashlib.sha256(b"$/a/b/c").hexdigest()
         //'63b2c7879bd2a4d08a4671047a19fdd4c88e580efb66d853045a210eea0afe79'
-        let expected = git_root
-            .join("cryptic")
-            .join("63")
+        let expected = std::path::PathBuf::from("63")
             .join("b2c7879bd2a4d08a4671047a19fdd4c88e580efb66d853045a210eea0afe79");
         assert_eq!(filepath, expected);
     }

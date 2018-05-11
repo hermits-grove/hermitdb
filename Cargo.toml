@@ -14,3 +14,6 @@ serde_derive = "1.0.27"
 data-encoding = "2.1.1"
 time = "0.1.39"
 tempfile = "3.0.1"
+# ditto = "0.2.0"
+[dependencies.ditto]
+path = "../ditto"

@@ -28,7 +28,7 @@ pub struct Plaintext {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Block {
+pub struct Encrypted{
     pub ciphertext: Vec<u8>,
     pub config: Config
 }
@@ -162,7 +162,7 @@ impl Config {
 }
 
 impl Plaintext {
-    pub fn encrypt(&mut self, sess: &mut Session) -> Result<Block, DBErr> {
+    pub fn encrypt(&mut self, sess: &mut Session) -> Result<Encrypted, DBErr> {
         // TAI: compress before encrypt
 
         if self.config.consumed {
@@ -173,16 +173,16 @@ impl Plaintext {
         let ciphertext = encrypt(&sess.pass()?, &sess.key_file()?, &self.data, &mut self.config)?;
         assert_eq!(self.config.consumed, true);
         
-        let block = Block {
+        let encrypted = Encrypted {
             ciphertext: ciphertext.to_vec(),
             config: self.config.clone()
         };
-        Ok(block)
+        Ok(encrypted)
     }
 }
 
-impl Block {
-    pub fn read(file_path: &std::path::Path) -> Result<Block, DBErr> {
+impl Encrypted {
+    pub fn read(file_path: &std::path::Path) -> Result<Encrypted, DBErr> {
         let mut f = std::fs::File::open(file_path)
             .map_err(DBErr::IO)?;
         
@@ -195,7 +195,7 @@ impl Block {
         f.read_to_end(&mut data)
             .map_err(DBErr::IO)?;
 
-        Ok(Block {
+        Ok(Encrypted {
             ciphertext: data,
             config: config
         })
@@ -477,7 +477,7 @@ mod test {
         
         encrypted.write(&file_path).unwrap();
 
-        let encrypted2 = Block::read(&file_path)
+        let encrypted2 = Encrypted::read(&file_path)
             .unwrap();
         assert_eq!(encrypted, encrypted2);
         

@@ -366,3 +366,14 @@ deleted `B:/a`
 ##### resolution
 
 keep `A:/a`
+
+
+
+**Case**
+
+
+
+A creates Block `/foo`
+
+B creates Block `/foo`
+
