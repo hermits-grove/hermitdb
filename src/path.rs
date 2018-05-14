@@ -1,22 +1,21 @@
 extern crate ring;
 use std;
-use std::borrow::{Cow, Borrow};
 
 use db_error::{DBErr};
 use encoding;
 
 #[derive(Debug, PartialEq, Clone, Hash, Serialize, Deserialize)]
-pub struct PathComp<'a>(Cow<'a, str>);
+pub struct PathComp(String);
 
-impl<'a> Eq for PathComp<'a> {}
+impl Eq for PathComp {}
 
 #[derive(Debug, PartialEq)]
-pub struct Path<'a> {
-    components: Vec<PathComp<'a>>,
+pub struct Path {
+    components: Vec<PathComp>,
 }
 
-impl<'a> PathComp<'a> {
-    pub fn escape<'b>(s: &str) -> PathComp<'b> {
+impl PathComp {
+    pub fn escape(s: &str) -> PathComp {
         let mut escaped = String::with_capacity(s.len());
         for c in s.chars() {
             if Path::is_special_char(c) {
@@ -24,20 +23,20 @@ impl<'a> PathComp<'a> {
             }
             escaped.push(c);
         }
-        PathComp(Cow::Owned(escaped))
+        PathComp(escaped)
     }
 
     pub fn value(&self) -> &str {
-        self.0.borrow()
+        &self.0[..]
     }
 }
 
-impl<'a> Path<'a> {
+impl Path {
     /// Construct the root path: "/"
-    pub fn root<'b>() -> Path<'b> {
+    pub fn root() -> Path {
         Path {
             components: Vec::new()
-       }
+        }
     }
 
     /// Construct a Path from a Path string
@@ -54,7 +53,7 @@ impl<'a> Path<'a> {
     /// The "root" path:           `/`
     /// A three level path:        `/apple/black/x`
     /// Escaped `/` within a path: `/a\/b`
-    pub fn new(s: &'a str) -> Result<Path<'a>, DBErr> {
+    pub fn new(s: &str) -> Result<Path, DBErr> {
         if s.len() == 0 || !s.starts_with("/") {
             return Err(DBErr::Parse(format!("Invalid Path \"{}\": Paths must begin with a '/'", s)));
         }
@@ -68,7 +67,7 @@ impl<'a> Path<'a> {
         }
 
         // TAI: is there a way to do this with no copy?
-        let mut components: Vec<PathComp<'a>> = Vec::new();
+        let mut components: Vec<PathComp> = Vec::new();
         let mut escaping = false;
         let mut comp_start = 1;
         let mut pos = 1;
@@ -86,10 +85,9 @@ impl<'a> Path<'a> {
                 if pos - comp_start == 0 {
                     return Err(DBErr::Parse(format!("Invalid path \"{}\": attempted to create a path with an empty component", s)));
                 }
-                components.push(PathComp(Cow::Borrowed(&s[comp_start..pos])));
+                components.push(PathComp(s[comp_start..pos].into()));
                 comp_start = pos + 1; // +1 skips the `/` seperator
             }
-
             pos += 1;
         }
 
@@ -104,11 +102,34 @@ impl<'a> Path<'a> {
             return Err(DBErr::Parse(format!("Invalid path \"{}\": path must not end in '/'", s)));
         }
 
-        components.push(PathComp(Cow::Borrowed(&s[comp_start..pos])));
+        components.push(PathComp(s[comp_start..pos].into()));
 
         Ok(Path {
             components: components
         })
+    }
+
+    pub fn is_root(&self) -> bool {
+        self.components.len() == 0
+    }
+
+    pub fn parent(&self) -> Option<Path> {
+        if self.is_root() {
+            None
+        } else {
+            let path = Path {
+                components: self.components[..(self.components.len() - 1)].to_vec()
+            };
+            Some(path)
+        }
+    }
+
+    pub fn base_comp(&self) -> Option<&PathComp> {
+        if self.is_root() {
+            None
+        } else {
+            Some(&self.components[self.components.len() - 1])
+        }
     }
 
     pub fn derive_filepath(&self, path_salt: &[u8]) -> std::path::PathBuf {
@@ -131,7 +152,7 @@ impl<'a> Path<'a> {
     }
 }
 
-impl<'a> ToString for Path<'a> {
+impl ToString for Path {
     fn to_string(&self) -> String {
         if self.components.len() == 0 {
             // handle root path case
@@ -148,7 +169,7 @@ impl<'a> ToString for Path<'a> {
             path.push('/');
             path.push_str(&comp.0);
         }
-        assert_eq!(path.capacity(), predicted_cap); // sanity check that our math was right
+        assert_eq!(path.capacity(), predicted_cap); // we allocated just just enough
         path
     }
 }

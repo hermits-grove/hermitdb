@@ -1,3 +1,5 @@
+extern crate ditto;
+
 use std;
 use std::io::{stdin, Read, Write, stdout};
 
@@ -16,6 +18,7 @@ pub struct Config {
 
 #[derive(Debug)]
 pub struct Session {
+    pub site_id: Option<ditto::dot::SiteId>,
     root: std::path::PathBuf,
     key_file: Option<[u8; 256/8]>,
     password: Option<Vec<u8>>
@@ -34,8 +37,9 @@ pub struct Encrypted{
 }
 
 impl Session {
-    pub fn new(root: &std::path::Path) -> Session {
+    pub fn new(root: &std::path::Path, site_id: Option<ditto::dot::SiteId>) -> Session {
         Session {
+            site_id: site_id,
             root: root.to_path_buf(),
             key_file: None,
             password: None
@@ -202,8 +206,15 @@ impl Encrypted {
     }
     
     pub fn write(&self, file_path: &std::path::Path) -> Result<(), DBErr> {
+        match file_path.parent() {    
+            Some(parent_path) =>
+                std::fs::create_dir_all(&parent_path).map_err(DBErr::IO),
+            None => Ok(()) // no parent to create
+        }?;
+
+        // File::create will replace existing files
         let mut f = std::fs::File::create(file_path)
-            .map_err(DBErr::IO)?;
+                .map_err(DBErr::IO)?;
 
         f.write_all(&self.config.to_bytes())
             .or_else(|e| {
@@ -217,7 +228,8 @@ impl Encrypted {
                 std::fs::remove_file(file_path)
                     .map_err(DBErr::IO)?;
                 Err(DBErr::IO(e))
-            })
+            })?;
+        Ok(())
     }
 
     pub fn decrypt(&self, sess: &mut Session) -> Result<Plaintext, DBErr> {
@@ -395,7 +407,7 @@ mod test {
     #[test]
     fn session() {
         let dir = tempfile::tempdir().unwrap();
-        let mut sess = Session::new(&dir.path());
+        let mut sess = Session::new(&dir.path(), None);
 
         assert_eq!(sess.root, dir.path());
         assert!(sess.password.is_none());
@@ -413,7 +425,7 @@ mod test {
 
         assert_eq!(sess.key_file().unwrap(), key_file_data);
 
-        let mut new_sess = Session::new(&dir.path());
+        let mut new_sess = Session::new(&dir.path(), None);
         assert_eq!(sess.key_file().unwrap(), new_sess.key_file().unwrap());
 
         assert!(sess.password.is_none());
@@ -429,6 +441,7 @@ mod test {
             config: Config::fresh_default().unwrap()
         };
         let mut sess = Session {
+            site_id: None,
             root: tempfile::tempdir().unwrap().path().to_path_buf(),
             key_file: Some(gen_rand_256().unwrap()),
             password: Some(gen_rand(12).unwrap())
@@ -467,6 +480,7 @@ mod test {
         };
 
         let mut sess = Session {
+            site_id: None,
             root: tempfile::tempdir().unwrap().path().to_path_buf(),
             key_file: Some(gen_rand_256().unwrap()),
             password: Some(gen_rand(12).unwrap())

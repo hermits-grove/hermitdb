@@ -1,29 +1,30 @@
 extern crate time;
 extern crate git2;
+extern crate rmp_serde;
 
 use self::git2::Repository;
 
 use std;
-use std::io::Write;
 
-use db_error::{DBErr};
-use crypto;
+use db_error::{Result, DBErr};
+use crypto::{Session, Plaintext, Encrypted, Config, gen_rand_256};
 use git_creds;
-use path;
+use block::{Json, Tree, TreeEntry};
+use path::{Path};
 
 pub struct DB {
-    pub db_root: std::path::PathBuf,
+    pub root: std::path::PathBuf,
     pub repo: git2::Repository
 }
 
 impl DB {
-    pub fn init(db_root: &std::path::Path, mut sess: &mut crypto::Session) -> Result<DB, DBErr> {
-        let repo = Repository::open(&db_root)
-            .or_else(|_| Repository::init(&db_root))
+    pub fn init(root: &std::path::Path, mut sess: &mut Session) -> Result<DB> {
+        let repo = Repository::open(&root)
+            .or_else(|_| Repository::init(&root))
             .map_err(DBErr::Git)?;
 
         let db = DB {
-            db_root: db_root.to_path_buf(),
+            root: root.to_path_buf(),
             repo: repo
         };
         
@@ -31,101 +32,155 @@ impl DB {
         Ok(db)
     }
 
-    fn consistancy_check(&self, mut sess: &mut crypto::Session) -> Result<(), DBErr> {
+    fn consistancy_check(&self, mut sess: &mut Session) -> Result<()> {
         let remotes = std::path::Path::new("remotes");
         let path_salt = std::path::Path::new("path_salt");
+        let cryptic = self.root.join("cryptic");
 
-        if !self.db_root.join(&remotes).is_file() {
+        if !self.root.join(&remotes).is_file() {
             self.write_remotes(&git_creds::Remotes::empty(), &mut sess)?;
             self.stage_file(&remotes)?;
         }
 
-        let path_salt_filepath = self.db_root.join(&path_salt);
+        let path_salt_filepath = self.root.join(&path_salt);
         if !path_salt_filepath.is_file() {
-            let salt = crypto::gen_rand_256()?;
-            let mut f = std::fs::File::create(path_salt_filepath).map_err(DBErr::IO)?;
-            f.write_all(&salt).map_err(DBErr::IO)?;
+            let salt = gen_rand_256()?;
+
+            Plaintext {
+                data: salt.to_vec(),
+                config: Config::fresh_default()?
+            }.encrypt(&mut sess)?.write(&path_salt_filepath)?;
+                
             self.stage_file(&path_salt)?;
         }
 
+        if !cryptic.is_dir() {
+            std::fs::create_dir(&cryptic).map_err(DBErr::IO)?;
+        }
         Ok(())
     }
 
-    fn path_salt(&self, mut sess: &mut crypto::Session) -> Result<Vec<u8>, DBErr> {
-        let path_salt_file = self.db_root.join("path_salt");
-        let path_salt = crypto::Encrypted::read(&path_salt_file)
+    fn path_salt(&self, mut sess: &mut Session) -> Result<Vec<u8>> {
+        let path_salt_file = self.root.join("path_salt");
+        let path_salt = Encrypted::read(&path_salt_file)
             ?.decrypt(&mut sess)
             ?.data;
 
         Ok(path_salt)
     }
 
-//    pub fn tree_block(&self, path: &path::Path) {
-//        
-//    }
-//
-//    pub fn put(&self, path: &path::Path, block: &crypto::Encrypted, mut sess: &mut crypto::Session) -> Result<(), DBErr> {
-//        let filepath = self.derive_filepath_from_path(&path);
-//        block.write(&filepath)?; // will fail if file already exists
-//
-//        let root = self.root()?;
-//        let entry_path = root.join(&entry.garbled_path);
-//
-//        data.write(&entry_path)?;
-//
-//        let manifest_old = self.manifest(&mut sess)?;
-//        for e in manifest_old.entries.iter() {
-//            if e.path == entry.path {
-//                self.rm(&entry.path, &mut sess)?; // TODO: use proper error messages so that we don't have to loop over manifest twice here
-//                break;
-//            }
-//        }
-//
-//        let manifest = self.manifest(&mut sess)?;
-//        let mut updated_entries: Vec<manifest::Entry> = manifest.entries.clone();
-//        updated_entries.push(entry);
-//        
-//        let updated_manifest = manifest::Manifest {
-//            entries: updated_entries,
-//            ..manifest
-//        };
-//
-//        self.write_manifest(&updated_manifest, &mut sess)
-//    }
+    pub fn read_tree(&self, path: &Path, mut sess: &mut Session) -> Result<Tree> {
+        let path_salt = self.path_salt(&mut sess)?;
+        let tree_filepath = self.root
+            .join("cryptic")
+            .join(&path.derive_filepath(&path_salt));
+        
+        if tree_filepath.exists() {
+            let plaintext = Encrypted::read(&tree_filepath)?.decrypt(&mut sess)?;
+            let tree = rmp_serde::from_slice(&plaintext.data)
+                .map_err(DBErr::SerdeDe)?;
+            Ok(tree)
+        } else {
+            Err(DBErr::NotFound)
+        }
+    }
 
-//    pub fn put(&self, entry_req: &manifest::EntryRequest, data: &crypto::Encrypted, mut sess: &mut crypto::Session) -> Result<(), DBErr> {
-//        entry_req.validate()?;
-//        
-//        let root = self.root()?;
-//
-//        let mut garbled = encoding::encode(&crypto::generate_rand_bits(96)?);
-//        while root.join(&garbled).exists() {
-//            garbled = encoding::encode(&crypto::generate_rand_bits(96)?);
-//        }
-//
-//        let entry = manifest::Entry {
-//            path: entry_req.path.clone(),
-//            tags: entry_req.tags.clone(),
-//            garbled_path: garbled
-//        };
-//
-//        self.put_entry(entry, &data, &mut sess)?;
-//        Ok(())     
-//    }
+    pub fn write_tree(&self, path: &Path, tree: &Tree, mut sess: &mut Session) -> Result<()> {
+        let path_salt = self.path_salt(&mut sess)?;
+        let tree_filepath = self.root
+            .join("cryptic")
+            .join(&path.derive_filepath(&path_salt));
 
-//    pub fn get(&self, path: &String, mut sess: &mut crypto::Session) -> Result<crypto::Encrypted, DBErr> {
-//        let root = self.root()?;
-//        let manifest = self.manifest(&mut sess)?;
-//        for e in manifest.entries.iter() {
-//            if &e.path == path {
-//                return crypto::Encrypted::read(&root.join(&e.garbled_path));
-//            }
-//        }
-//        // TODO: we are using Err to represent a get for a non-existing entity, we should have different result type which would tell you if there is no element and distinguish from regular errors
-//        Err(format!("No entry with given path: {}", path))
-//    }
+        if !tree_filepath.exists() && !path.is_root() {
+            // recursively add entry to parent tree until root
 
-//    pub fn rm(&self, path: &String, mut sess: &mut crypto::Session) -> Result<(), DBErr> {
+            let parent_path = path.parent()
+                .ok_or(DBErr::State("non-root path has no parent!".into()))?;
+            let base_comp = path.base_comp()
+                .ok_or(DBErr::State("non-root path has no base component!".into()))?;
+
+            let tree_entry = TreeEntry::tree(&base_comp);
+
+            let mut parent = match self.read_tree(&parent_path, &mut sess) {
+                Ok(mut parent) => parent, 
+                Err(DBErr::NotFound) => Tree::empty(&sess.site_id)?,
+                Err(e) => return Err(e)
+            };
+
+            parent.add(&tree_entry)?;
+            self.write_tree(&parent_path, &parent, &mut sess)?;
+        }
+
+        if tree_filepath.exists() {
+            // test that existing file is a Tree
+            let plaintext = Encrypted::read(&tree_filepath)?.decrypt(&mut sess)?;
+            let _: Tree = rmp_serde::from_slice(&plaintext.data)
+                .map_err(|_| DBErr::State("Attempted to write tree on top of existing non-tree".into()))?;
+        }   
+
+        Plaintext {
+            data: rmp_serde::to_vec(&tree).map_err(DBErr::SerdeEn)?,
+            config: Config::fresh_default()?
+        }.encrypt(&mut sess)?.write(&tree_filepath)?;
+        Ok(())
+    }
+
+    pub fn read_json(&self, path: &Path, mut sess: &mut Session) -> Result<Json> {
+        let path_salt = self.path_salt(&mut sess)?;
+        let json_filepath = self.root
+            .join("cryptic")
+            .join(&path.derive_filepath(&path_salt));
+
+        if json_filepath.exists() {
+            let plaintext = Encrypted::read(&json_filepath)?.decrypt(&mut sess)?;
+            let json = rmp_serde::from_slice(&plaintext.data).map_err(DBErr::SerdeDe)?;
+            Ok(json)
+        } else {
+            Err(DBErr::NotFound)
+        }
+    }
+
+    pub fn write_json(&self, path: &Path, json: &Json, mut sess: &mut Session) -> Result<()> {
+        if path.is_root() {
+            return Err(DBErr::State("Attempting to write Json to root path".into()));
+        }
+        
+        let path_salt = self.path_salt(&mut sess)?;
+        let json_filepath = self.root
+            .join("cryptic")
+            .join(&path.derive_filepath(&path_salt));
+
+        if !json_filepath.exists() {
+            // recursively add entry to parent tree until root
+
+            let parent_path = path.parent()
+                .ok_or(DBErr::State("non-root path has no parent!".into()))?;
+            let base_comp = path.base_comp()
+                .ok_or(DBErr::State("non-root path has no base component!".into()))?;
+
+            let mut parent = match self.read_tree(&parent_path, &mut sess) {
+                Ok(mut parent) => parent, 
+                Err(DBErr::NotFound) => Tree::empty(&sess.site_id)?,
+                Err(e) => return Err(e)
+            };
+
+            parent.add(&TreeEntry::json(&base_comp))?;
+            self.write_tree(&parent_path, &parent, &mut sess)?;
+        } else {
+            // test that existing file is a Json
+            let plaintext = Encrypted::read(&json_filepath)?.decrypt(&mut sess)?;
+            let _: Json = rmp_serde::from_slice(&plaintext.data)
+                .map_err(|_| DBErr::State("Attempted to write json on top of existing non-json".into()))?;
+        }
+        
+        Plaintext {
+            data: rmp_serde::to_vec(&json).map_err(DBErr::SerdeEn)?,
+            config: Config::fresh_default()?
+        }.encrypt(&mut sess)?.write(&json_filepath)?;
+        Ok(())
+    }
+
+//    pub fn rm(&self, path: &String, mut sess: &mut Session) -> Result<()> {
 //        let manifest = self.manifest(&mut sess)?;
 //        let matching_entries: Vec<&manifest::Entry> = manifest.entries.iter().filter(|e| &e.path == path).collect();
 //        if matching_entries.len() == 0 {
@@ -154,7 +209,7 @@ impl DB {
 //        self.write_manifest(&updated_manifest, &mut sess)
 //    }
 
-//    pub fn add_remote(&self, remote: &git_creds::Remote, mut sess: &mut crypto::Session) -> Result<(), DBErr> {
+//    pub fn add_remote(&self, remote: &git_creds::Remote, mut sess: &mut Session) -> Result<()> {
 //        let remotes = self.remotes(&mut sess)?;
 //        let mut updated_remotes = remotes.remotes.clone();
 //        updated_remotes.push(remote.clone());
@@ -170,7 +225,7 @@ impl DB {
 //            .map_err(|e| format!("Failed to add remote: {:?}", e))
 //    }
 
-//    pub fn remove_remote(&self, name: &String, mut sess: &mut crypto::Session) -> Result<(), DBErr> {
+//    pub fn remove_remote(&self, name: &String, mut sess: &mut Session) -> Result<()> {
 //        let remotes = self.remotes(&mut sess)?;
 //        let updated_remotes: Vec<_> = remotes
 //            .remotes
@@ -190,13 +245,13 @@ impl DB {
 //            .map_err(|e| format!("Failed to remove remote: {:?}", e))
 //    }
 
-//    pub fn remotes(&self, mut sess: &mut crypto::Session) -> Result<git_creds::Remotes, DBErr> {
+//    pub fn remotes(&self, mut sess: &mut Session) -> Result<git_creds::Remotes> {
 //        let path = self.root()?.join("remotes");
-//        let remotes_toml_bytes = crypto::Encrypted::read(&path)?.decrypt(&mut sess)?.data;
+//        let remotes_toml_bytes = Encrypted::read(&path)?.decrypt(&mut sess)?.data;
 //        git_creds::Remotes::from_toml_bytes(&remotes_toml_bytes)
 //    }
 
-    fn stage_file(&self, file: &std::path::Path) -> Result<(), DBErr> {
+    fn stage_file(&self, file: &std::path::Path) -> Result<()> {
         let mut index = self.repo.index()
             .map_err(DBErr::Git)?;
         index.add_path(&file)
@@ -206,7 +261,7 @@ impl DB {
         Ok(())
     }
 
-//    fn commit(&self, commit_msg: &String, extra_parents: &Vec<&git2::Commit>) -> Result<(), DBErr> {
+//    fn commit(&self, commit_msg: &String, extra_parents: &Vec<&git2::Commit>) -> Result<()> {
 //        let tree = self.repo.index()
 //            .and_then(|mut index| {
 //                index.write()?; // make sure the index on disk is up to date
@@ -243,7 +298,7 @@ impl DB {
 //    }
         
               
-//    fn pull_remote(&self, remote: &git_creds::Remote) -> Result<(), DBErr> {
+//    fn pull_remote(&self, remote: &git_creds::Remote) -> Result<()> {
 //        println!("Pulling from remote: {}", remote.name);
 //        let mut git_remote = self.repo.find_remote(&remote.name)
 //            .map_err(|e| format!("Failed to find remote {}: {:?}", remote.name, e))?;
@@ -304,7 +359,7 @@ impl DB {
 //        Ok(())
 //    }
 
-//    pub fn push_remote(&self, remote: &git_creds::Remote) -> Result<(), DBErr> {
+//    pub fn push_remote(&self, remote: &git_creds::Remote) -> Result<()> {
 //        println!("Pushing to remote {} {}", remote.name, remote.url);
 //        let mut git_remote = self.repo.find_remote(&remote.name)
 //            .map_err(|e| format!("Failed to find remote with name {}: {:?}", remote.name, e))?;
@@ -318,7 +373,7 @@ impl DB {
 //        Ok(())
 //    }
 
-//    pub fn sync(&self, mut sess: &mut crypto::Session) -> Result<(), DBErr> {
+//    pub fn sync(&self, mut sess: &mut Session) -> Result<()> {
 //        for remote in self.remotes(&mut sess)?.remotes.iter() {
 //            self.pull_remote(&remote)?;
 //        }
@@ -352,11 +407,11 @@ impl DB {
     
     // PRIVATE METHODS ====================
 
-    fn write_remotes(&self, remotes: &git_creds::Remotes, mut sess: &mut crypto::Session) -> Result<(), DBErr>{
-        crypto::Plaintext {
+    fn write_remotes(&self, remotes: &git_creds::Remotes, mut sess: &mut Session) -> Result<()> {
+        Plaintext {
             data: remotes.to_toml_bytes()?,
-            config: crypto::Config::fresh_default()?
-        }.encrypt(&mut sess)?.write(&self.db_root.join("remotes"))
+            config: Config::fresh_default()?
+        }.encrypt(&mut sess)?.write(&self.root.join("remotes"))
     }
 }
 
@@ -368,18 +423,18 @@ mod test {
     #[test]
     fn init() {
         let dir = tempfile::tempdir().unwrap();
-        let mut sess = crypto::Session::new(dir.path());
+        let mut sess = Session::new(dir.path(), None);
         sess.create_key_file().unwrap();
         sess.set_pass(":P".as_bytes());
         let git_root = dir.path().join("db");
 
-        DB::init(&git_root, &mut sess).unwrap();
+        let db = DB::init(&git_root, &mut sess).unwrap();
         assert!(git_root.is_dir());
 
         let remotes_filepath = git_root.join("remotes");
         assert!(remotes_filepath.is_file());
 
-        let remotes_plain = crypto::Encrypted::read(&remotes_filepath)
+        let remotes_plain = Encrypted::read(&remotes_filepath)
             .unwrap()
             .decrypt(&mut sess)
             .unwrap();
@@ -388,31 +443,39 @@ mod test {
 
         let path_salt_path = git_root.join("path_salt");
         assert!(path_salt_path.is_file());
-        assert_eq!(std::fs::metadata(&path_salt_path).unwrap().len(), 256/8);
+        
+        let path_salt = db.path_salt(&mut sess).unwrap();
+        assert_eq!(path_salt.len(), 256/8);
+
+        let db2 = DB::init(&git_root, &mut sess).unwrap();
+        assert_eq!(db2.path_salt(&mut sess).unwrap(), path_salt);
+
+        assert!(db.root.join("cryptic").is_dir());
     }
 
     #[test]
     fn path_salt_used_correctly() {
         let dir = tempfile::tempdir().unwrap();
-        let mut sess = crypto::Session::new(dir.path());
+        let mut sess = Session::new(dir.path(), None);
         sess.create_key_file().unwrap();
         sess.set_pass(":P".as_bytes());
         let git_root = &dir.path().join("db");
 
         let db = DB::init(git_root, &mut sess).unwrap();
         // fix the path salt to "$"
-        crypto::Plaintext {
+        let encrypted = Plaintext {
             data: "$".as_bytes().to_vec(),
-            config: crypto::Config::fresh_default().unwrap()
-        }.encrypt(&mut sess)
-            .unwrap()
-            .write(&git_root.join("path_salt"))
+            config: Config::fresh_default().unwrap()
+        }.encrypt(&mut sess).unwrap();
+            
+        encrypted.write(&db.root.join("path_salt"))
             .unwrap();
 
-        assert_eq!(db.path_salt(&mut sess).unwrap(), "$".as_bytes());
-        let filepath = path::Path::new("/a/b/c")
+        let path_salt = db.path_salt(&mut sess).unwrap();
+        assert_eq!(path_salt, "$".as_bytes());
+        let filepath = Path::new("/a/b/c")
             .unwrap()
-            .derive_filepath(&db.path_salt(&mut sess).unwrap());
+            .derive_filepath(&path_salt);
 
         //test vector comes from the python code:
         //>>> import hashlib
@@ -421,5 +484,84 @@ mod test {
         let expected = std::path::PathBuf::from("63")
             .join("b2c7879bd2a4d08a4671047a19fdd4c88e580efb66d853045a210eea0afe79");
         assert_eq!(filepath, expected);
+    }
+
+    #[test]
+    fn tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sess = Session::new(dir.path(), Some(1));
+        sess.create_key_file().unwrap();
+        sess.set_pass(":P".as_bytes());
+        let git_root = &dir.path().join("db");
+
+        let db = DB::init(git_root, &mut sess).unwrap();
+
+        let paths_to_check = [
+            Path::new("/").unwrap(),
+            Path::new("/a").unwrap(),
+            Path::new("/a/b").unwrap(),
+            Path::new("/a/b/c").unwrap()
+        ];
+
+        let path_salt = db.path_salt(&mut sess).unwrap();
+
+        for p in paths_to_check.iter() {
+            let path = db.root.join("cryptic").join(&p.derive_filepath(&path_salt));
+            assert!(!path.exists()); // should not exist yet
+        }
+        
+        db.write_tree(
+            &Path::new("/a/b/c").unwrap(),
+            &Tree::empty(&sess.site_id).unwrap(),
+            &mut sess
+        ).unwrap();
+
+        for p in paths_to_check.iter() {
+            let path = db.root.join("cryptic").join(&p.derive_filepath(&path_salt));
+            println!("path: {:?}", path);
+            assert!(path.exists()); // all prefix paths should now exist
+        }
+
+        let tree = db.read_tree(&Path::new("/a/b/c").unwrap(), &mut sess).unwrap();
+        assert_eq!(tree, Tree::empty(&sess.site_id).unwrap());
+    }
+
+    #[test]
+    fn json() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut sess = Session::new(dir.path(), Some(1));
+        sess.create_key_file().unwrap();
+        sess.set_pass(":P".as_bytes());
+        let git_root = &dir.path().join("db");
+
+        let db = DB::init(git_root, &mut sess).unwrap();
+
+        let json = Json::from_str(r#"
+        {
+            "foo": 123,
+            "bar": [
+                "Hello",
+                "Aloha",
+                "Hola"
+            ],
+            "baz": true
+        }"#).unwrap();
+
+        let res = db.read_json(&Path::new("/a/b/c").unwrap(), &mut sess);
+        assert!(res.is_err()); // nothing should exist
+        
+        db.write_json(&Path::new("/a/b/c").unwrap(), &json, &mut sess).unwrap();
+        
+        let read_json = db.read_json(&Path::new("/a/b/c").unwrap(), &mut sess).unwrap();
+        assert_eq!(json, read_json);
+
+        let res = db.write_json(&Path::new("/a/b/c").unwrap(), &json, &mut sess);
+        assert!(res.is_ok());
+        
+        let res = db.write_json(&Path::new("/a/b").unwrap(), &json, &mut sess);
+        assert!(res.is_err()); // should fail to overwrite tree
+        
+        let res = db.write_tree(&Path::new("/a/b/c").unwrap(), &Tree::empty(&sess.site_id).unwrap(), &mut sess);
+        assert!(res.is_err()); // should fail to overwrite json with tree
     }
 }

@@ -191,6 +191,13 @@ deleted:  ./cryptic/d6/1f774e6a...b87a // derived from sha256("$/a/b/c")
 ```
 
 ### Crypto
+#### TAI: Safe Nonce Use
+- designate first 32 bits of nonce to site_id
+- per site 64 bit nonce stored in `./sites/<site_id>/NONCE`
+
+`96 bit nonce := [ site_id: u32 | site_nonce: u64]`
+
+`site_nonce` must be incremented and written to disk after each use.
 
 #### Avoiding Nonce Reuse Attacks (by not using nonces)
 
@@ -345,35 +352,71 @@ while !push_succeeded {
 }
 ```
 
-#### Conflict Resolution
+#### Conflict Resolution Semantics and Limitations
 
-##### Case
+Merge semantics of JSON CRDT's come from the underlying `ditto` library
 
+
+But the filesystem tree structure is managed by gitdb
+
+We'll need to deal with a few cases:
+(notation: `<action> <id>:<path>` ~= Site <id> took <action> on data at <path>)
+
+**case**
 modified `A:/a`
-
 modified `B:/a`
 
-##### resolution
+merge: handled by ditto `ditto::merge(db.get("A:/a"), db.get("B:/b"))`
 
-`encrypt(output="/a", plain=merge(decrypt(A:/a), decrypt(B:/a)))`
-
-##### Case
-
+**case**
 modified `A:/a`
-
 deleted `B:/a`
 
-##### resolution
+merge: keep `A:/a`
 
-keep `A:/a`
+**case**
+modified `A:/a/b/c`
+deleted `B:/a`
 
+merge: keep `A:/a/b/c` delete everything else under `/a/*`
 
+**case**
+created `A:/foo`
+created `B:/foo`
 
-**Case**
+merge:
+    if `A:/foo` and `B:/foo` are of the same crdt type
+        `ditto::merge("A:/foo", "B:/foo")`
+    otherwise merge fails
 
+# Known Failure Modes
 
+## Super bad catastrophic crypto failure, fix this!!
 
-A creates Block `/foo`
+SiteId's are u32's generated at random.
+They are used to resolve merge's in datatypes
+and used to generate unique nonces
 
-B creates Block `/foo`
+32bits is tiny! theres a chance of two sites ending up with the same `site_id`. When this happens we may expose our secret key:
 
+new site A with `site_id = 472`
+new site B with `site_id = 472`
+
+both sites encrypt data using the same `site_nonce = [472u32 | 0u64]`
+
+`A:/foo`
+`B:/bar`
+
+once they push to remotes, confidentiality will be lost, the encryption key may be exposed
+
+*Potential data loss*
+
+If two sites with same SiteId's both modify the same CRDT, data loss will likely happen
+
+How to fix?
+
+1. IDEAL: Do some calculations on probabilities, the risk may be acceptable.
+
+2. NOT IDEAL: Wait until first sync before allowing writes, prompt user for verification that all site-id's are present before generating a random site-id and checking against existing sites.
+
+3. .... still thinking
