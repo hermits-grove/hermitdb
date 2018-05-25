@@ -8,6 +8,7 @@ pub type Result<T> = std::result::Result<T, DBErr>;
 #[derive(Debug)]
 pub enum DBErr {
     NotFound,
+    BlockTypeConflict,
     Parse(String),
     Crypto(String),
     Version(String),

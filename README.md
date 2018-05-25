@@ -191,6 +191,13 @@ deleted:  ./cryptic/d6/1f774e6a...b87a // derived from sha256("$/a/b/c")
 ```
 
 ### Crypto
+
+#### Session
+
+The session stores all components necessary to perform crypto related actions.
+
+
+
 #### TAI: Safe Nonce Use
 - designate first 32 bits of nonce to site_id
 - per site 64 bit nonce stored in `./sites/<site_id>/NONCE`
@@ -219,7 +226,55 @@ Key files random 256 bit keys  that are used to add additional entropy into the 
 
 The same key file must be present on each site to access your data.
 
-**TODO: how to do key_file sharing? probably need to do a key echange** https://briansmith.org/rustdoc/ring/agreement/index.html
+##### Protocol for key_file Key Exchange
+
+New site makes clones the git repository
+
+**Case:** no entries in <root>/db/sites/
+Either this is the first site added to this gitdb instance or other site has not synchronized yet with the remote.
+
+In either case, generate a new key_file, key pair, store files at `<root>/key_file`, `<root>/db/sites/<site_id>/id.pub` and `<root>/id.priv` respectively.
+
+Attempt to push
+
+If push fails, this means another site has created a key_file before you did, delete your key file and start over.
+
+**Case:** there exists entries in `<root>/db/sites/*`
+In this case a key_file already exists
+
+generate a key pair, store files at `<root>/db/sites/<site_id>/id.pub` and `<root>/id.priv` and synchronize.
+
+periodically run `git pull` followed by checking if `<root>/db/sites/<site_id>/key_file.<existing_site_id>` exists.
+
+*as an existing site*
+
+Sites are expected to periodically sync gitdb with remotes.
+
+on sync, sites detect newly added sites by scanning `<root>/db/sites/` for entries which are missing `<root>/db/sites/<some_site_id>/key_file.*`.
+
+Once a new site is detected, gitdb will prompt user for decision of whether they trust this new site. This is done through a callback passed to sync.
+
+On confirmation from user, this site will:
+1. generate an ephemeral key using the new site's public key
+2. encrypt the key_file using this ephemeral key
+3. write the encrypted key_file to `<root>/db/sites/<new_site_id>/key_file.<site_id>`
+
+And proceed with sync.
+
+*back to new site*
+
+on next `git pull`, we should have `<root>/db/sites/<site_id>/key_file.<existing_site_id>`
+
+Notify user which site gave us the key_file. Ask for confirmation that they trust this site.
+
+On confirmation, read the file and decrypt:
+1. generate an ephemeral key using the new site's public key
+2. encrypt the key_file using this ephemeral key
+3. write the encrypted key_file to `<root>/db/sites/<new_site_id>/key_file.<site_id>`
+
+Despite user confirmation, authenticity of key_file must be verified by attempt to decrypt `<root>/db/path_salt`. An attacker with access to the remote may have created the `db/sites/<site_id>/key_file` maliciously, if we don't attempt to decrypt an encrypted file with this key_file, we risk making ourselves susceptible to bruteforce against the master passphrase.
+
+write plaintext key_file to `<root>/key_file`
 
 #### Key Derivation
 

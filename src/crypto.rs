@@ -18,7 +18,7 @@ pub struct Config {
 
 #[derive(Debug)]
 pub struct Session {
-    pub site_id: Option<ditto::dot::SiteId>,
+    pub site_id: ditto::dot::SiteId,
     root: std::path::PathBuf,
     key_file: Option<[u8; 256/8]>,
     password: Option<Vec<u8>>
@@ -37,7 +37,7 @@ pub struct Encrypted{
 }
 
 impl Session {
-    pub fn new(root: &std::path::Path, site_id: Option<ditto::dot::SiteId>) -> Session {
+    pub fn new(root: &std::path::Path, site_id: ditto::dot::SiteId) -> Session {
         Session {
             site_id: site_id,
             root: root.to_path_buf(),
@@ -104,7 +104,7 @@ impl Config {
 
         Ok(Config {
             version: 0,
-            pbkdf2_iters: 100000,
+            pbkdf2_iters: 1,
             pbkdf2_salt: salt,
             consumed: false
         })
@@ -186,6 +186,17 @@ impl Plaintext {
 }
 
 impl Encrypted {
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Encrypted, DBErr> {
+        let config = Config::from_bytes(&bytes[0..Config::serialized_byte_count()])?;
+        let data = &bytes[Config::serialized_byte_count()..];
+
+        Ok(Encrypted {
+            ciphertext: data.to_vec(),
+            config: config
+        })
+    }
+    
     pub fn read(file_path: &std::path::Path) -> Result<Encrypted, DBErr> {
         let mut f = std::fs::File::open(file_path)
             .map_err(DBErr::IO)?;
@@ -204,7 +215,7 @@ impl Encrypted {
             config: config
         })
     }
-    
+
     pub fn write(&self, file_path: &std::path::Path) -> Result<(), DBErr> {
         match file_path.parent() {    
             Some(parent_path) =>
@@ -233,11 +244,14 @@ impl Encrypted {
     }
 
     pub fn decrypt(&self, sess: &mut Session) -> Result<Plaintext, DBErr> {
+        println!("decrypting....");
         let plaintext_data = decrypt(&sess.pass()?, &sess.key_file()?, &self.ciphertext, &self.config)?;
         let plaintext = Plaintext {
             data: plaintext_data.to_vec(),
             config: self.config.clone()
         };
+        
+        println!("decrypted!");
         Ok(plaintext)
     }
 }
@@ -407,7 +421,7 @@ mod test {
     #[test]
     fn session() {
         let dir = tempfile::tempdir().unwrap();
-        let mut sess = Session::new(&dir.path(), None);
+        let mut sess = Session::new(&dir.path(), 0);
 
         assert_eq!(sess.root, dir.path());
         assert!(sess.password.is_none());
@@ -425,7 +439,7 @@ mod test {
 
         assert_eq!(sess.key_file().unwrap(), key_file_data);
 
-        let mut new_sess = Session::new(&dir.path(), None);
+        let mut new_sess = Session::new(&dir.path(), 0);
         assert_eq!(sess.key_file().unwrap(), new_sess.key_file().unwrap());
 
         assert!(sess.password.is_none());
@@ -441,7 +455,7 @@ mod test {
             config: Config::fresh_default().unwrap()
         };
         let mut sess = Session {
-            site_id: None,
+            site_id: 0,
             root: tempfile::tempdir().unwrap().path().to_path_buf(),
             key_file: Some(gen_rand_256().unwrap()),
             password: Some(gen_rand(12).unwrap())
@@ -480,7 +494,7 @@ mod test {
         };
 
         let mut sess = Session {
-            site_id: None,
+            site_id: 0,
             root: tempfile::tempdir().unwrap().path().to_path_buf(),
             key_file: Some(gen_rand_256().unwrap()),
             password: Some(gen_rand(12).unwrap())
