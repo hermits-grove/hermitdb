@@ -24,8 +24,7 @@ impl DB {
     pub fn init(root: &std::path::Path, mut sess: &mut Session) -> Result<DB> {
         println!("initializing gitdb at {:?}", root);
         let repo = Repository::open(&root)
-            .or_else(|_| Repository::init(&root))
-            .map_err(DBErr::Git)?;
+            .or_else(|_| Repository::init(&root))?;
 
         let db = DB {
             root: root.to_path_buf(),
@@ -39,61 +38,30 @@ impl DB {
 
     pub fn init_from_remote(root: &std::path::Path, remote: &Remote, mut sess: &mut Session) -> Result<DB> {
         println!("initializing from remote");
-        let repo = Repository::init(&root)
-            .map_err(DBErr::Git)?;
+        let repo = Repository::init(&root)?;
 
-//        {
-//            // make an initial commit
-//            println!("making initial commit");
-//            let mut index = repo.index().map_err(DBErr::Git)?;
-//            let tree = index.write_tree()
-//                .and_then(|tree_oid| repo.find_tree(tree_oid))
-//                .map_err(DBErr::Git)?;
-//
-//            println!("pre-commit");
-//            // commit the current tree
-//            let sig = repo.signature()
-//                .map_err(DBErr::Git)?;
-//
-//            let commit_msg = format!("initial commit from site: {}", sess.site_id);
-//            repo.commit(Some("HEAD"), &sig, &sig, &commit_msg, &tree, &[])
-//                .map_err(DBErr::Git)?;
-//        
-//            println!("finished initial commit");
-//        }
         {
-            let mut git_remote = repo.remote(&remote.name(), &remote.url())
-                .map_err(DBErr::Git)?;
+            let mut git_remote = repo.remote(&remote.name(), &remote.url())?;
 
-            println!("fetched remote");
+            println!("fetched remote {}", &remote.name());
 
             let mut fetch_opt = git2::FetchOptions::new();
             fetch_opt.remote_callbacks(remote.git_callbacks());
-            git_remote.fetch(&["master"], Some(&mut fetch_opt), None)
-                .map_err(DBErr::Git)?;
+            git_remote.fetch(&["master"], Some(&mut fetch_opt), None)?;
         }
+
         println!("looking for remote master branch..");
-        if let Ok(branch) = repo.find_branch(&format!("{}/master", &remote.name()), git2::BranchType::Remote) {
+        let remote_master_ref = format!("{}/master", &remote.name());
+        if let Ok(branch) = repo.find_branch(&remote_master_ref, git2::BranchType::Remote) {
             println!("found remote master branch!");
-            let remote_branch_commit_oid = branch
-                .get()
-                .resolve()
-                .map_err(DBErr::Git)
-                ?.target()
+            let remote_branch_commit_oid = branch.get().resolve()?.target()
                 .ok_or(DBErr::State("remote ref didn't resolve to commit".into()))?;
 
-            let remote_commit = repo
-                .find_commit(remote_branch_commit_oid)
-                .map_err(DBErr::Git)?;
+            let remote_commit = repo.find_commit(remote_branch_commit_oid)?;
 
-            repo.branch("master", &remote_commit, false)
-                .map_err(DBErr::Git)?;
-
-            repo.set_head("refs/heads/master")
-                .map_err(DBErr::Git)?;
-
-            repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
-                .map_err(DBErr::Git)?;
+            repo.branch("master", &remote_commit, false)?;
+            repo.set_head("refs/heads/master")?;
+            repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
         } else {
             println!("remote master branch not found! initializing as a new repo");
             // remote is empty! initialize as normal
@@ -107,7 +75,7 @@ impl DB {
     fn consistancy_check(&self, mut sess: &mut Session) -> Result<()> {
         let cryptic = self.root.join("cryptic");
         if !cryptic.is_dir() {
-            std::fs::create_dir(&cryptic).map_err(DBErr::IO)?;
+            std::fs::create_dir(&cryptic)?;
         }
         Ok(())
     }
@@ -167,8 +135,7 @@ impl DB {
         println!("read_block {}\n\t{:?}", key, block_filepath);
         if block_filepath.exists() {
             let plaintext = Encrypted::read(&block_filepath)?.decrypt(&mut sess)?;
-            let block_reg: ditto::Register<Block> = rmp_serde::from_slice(&plaintext.data)
-                .map_err(DBErr::SerdeDe)?;
+            let block_reg: ditto::Register<Block> = rmp_serde::from_slice(&plaintext.data)?;
             Ok(block_reg.get().to_owned())
         } else {
             Err(DBErr::NotFound)
@@ -195,8 +162,7 @@ impl DB {
             let register = if block_filepath.exists() {
                 let plaintext = Encrypted::read(&block_filepath)?.decrypt(&mut sess)?;
 
-                let mut existing_reg: ditto::Register<Block> = rmp_serde::from_slice(&plaintext.data)
-                    .map_err(DBErr::SerdeDe)?;
+                let mut existing_reg: ditto::Register<Block> = rmp_serde::from_slice(&plaintext.data)?;
 
                 let mut existing_block = existing_reg.clone().get().to_owned();
 
@@ -213,10 +179,10 @@ impl DB {
             };
         
             Plaintext {
-                data: rmp_serde::to_vec(&register).map_err(DBErr::SerdeEn)?,
+                data: rmp_serde::to_vec(&register)?,
                 config: Config::fresh_default()?
-            }.encrypt(&mut sess)
-                ?.write(&block_filepath)?;
+            }.encrypt(&mut sess)?.write(&block_filepath)?;
+
             self.stage_file(&rel_path)?;
         }
         Ok(())
@@ -224,35 +190,30 @@ impl DB {
 
     fn sync(&self, mut sess: &mut Session) -> Result<()> {
         // we assume all files to be synced have already been added to the index
-        let mut index = self.repo.index().map_err(DBErr::Git)?;
+        let mut index = self.repo.index()?;
         let tree = index.write_tree()
-            .and_then(|tree_oid| self.repo.find_tree(tree_oid))
-            .map_err(DBErr::Git)?;
+            .and_then(|tree_oid| self.repo.find_tree(tree_oid))?;
 
-        println!("pre-commit");
-        // commit the current tree
+        println!("wrote current tree");
         {
             let parent: Option<git2::Commit> = match self.repo.head() {
                 Ok(head_ref) => {
                     let head_oid = head_ref.target()
                         .ok_or(DBErr::State(format!("Failed to find oid referenced by HEAD")))?;
-                    let head_commit = self.repo.find_commit(head_oid)
-                        .map_err(DBErr::Git)?;
+                    let head_commit = self.repo.find_commit(head_oid)?;
                     Some(head_commit)
                 },
                 Err(_) => None // initial commit (no parent)
             };
 
-            let sig = self.repo.signature()
-                .map_err(DBErr::Git)?;
+            let sig = self.repo.signature()?;
 
             let mut parent_commits = Vec::new();
             if let Some(ref commit) = parent {
                 parent_commits.push(commit)
             }
             let commit_msg = format!("sync commit from site: {}", sess.site_id);
-            self.repo.commit(Some("HEAD"), &sig, &sig, &commit_msg, &tree, &parent_commits)
-                .map_err(DBErr::Git)?;
+            self.repo.commit(Some("HEAD"), &sig, &sig, &commit_msg, &tree, &parent_commits)?;
         }
         
         println!("post-commit");
@@ -263,8 +224,7 @@ impl DB {
             Ok(git_remote) => git_remote,
             Err(_) => {
                 // does not exist, we add this remote to git
-                self.repo.remote(&remote.name(), &remote.url())
-                    .map_err(DBErr::Git)?
+                self.repo.remote(&remote.name(), &remote.url())?
             }
         };
 
@@ -272,43 +232,32 @@ impl DB {
 
         let mut fetch_opt = git2::FetchOptions::new();
         fetch_opt.remote_callbacks(remote.git_callbacks());
-        git_remote.fetch(&["master"], Some(&mut fetch_opt), None)
-            .map_err(DBErr::Git)?;
+        git_remote.fetch(&["master"], Some(&mut fetch_opt), None)?;
         
         println!("entering find_branch if");
-        if let Ok(branch) = self.repo.find_branch(&format!("{}/master", &remote.name()), git2::BranchType::Remote) {
+        let remote_master_ref = format!("{}/master", &remote.name());
+        if let Ok(branch) = self.repo.find_branch(&remote_master_ref, git2::BranchType::Remote) {
             println!("in find_branch if");
-            let remote_branch_commit_oid = branch
-                .get()
-                .resolve()
-                .map_err(DBErr::Git)
-                ?.target()
+            let remote_branch_commit_oid = branch.get().resolve()?.target()
                 .ok_or(DBErr::State("remote ref didn't resolve to commit".into()))?;
 
             let remote_annotated_commit = self.repo
-                .find_annotated_commit(remote_branch_commit_oid)
-                .map_err(DBErr::Git)?;
+                .find_annotated_commit(remote_branch_commit_oid)?;
 
-            let (analysis, _) = self.repo.merge_analysis(&[&remote_annotated_commit])
-                .map_err(DBErr::Git)?;
+            let (analysis, _) = self.repo.merge_analysis(&[&remote_annotated_commit])?;
             
             if analysis != git2::MergeAnalysis::ANALYSIS_UP_TO_DATE {
                 let remote_commit = self.repo
-                    .find_commit(remote_branch_commit_oid)
-                    .map_err(DBErr::Git)?;
+                    .find_commit(remote_branch_commit_oid)?;
                 
                 // we handle the merge ourselves
-                let remote_tree = remote_commit
-                    .tree()
-                    .map_err(DBErr::Git)?;
+                let remote_tree = remote_commit.tree()?;
 
                 // now the tricky part, detecting and handling conflicts
                 // we want to merge the local tree with the remote_tree
-                let diff = self.repo.diff_tree_to_tree(
-                    Some(&tree),
-                    Some(&remote_tree),
-                    None // TODO: see if there are any diff options we can use
-                ).map_err(DBErr::Git)?;
+
+                 // TODO: see if there are any diff options we can use to speed up the diff
+                let diff = self.repo.diff_tree_to_tree(Some(&tree), Some(&remote_tree), None)?;
 
                 println!("iterating foreach");
                 diff.foreach(
@@ -342,29 +291,25 @@ impl DB {
                     None,
                     None,
                     None
-                ).map_err(DBErr::Git)?;
+                )?;
 
                 {
                     println!("merge commit");
-                    let mut index = self.repo.index().map_err(DBErr::Git)?;
+                    let mut index = self.repo.index()?;
                     let tree = index.write_tree()
-                        .and_then(|tree_oid| self.repo.find_tree(tree_oid))
-                        .map_err(DBErr::Git)?;
+                        .and_then(|tree_oid| self.repo.find_tree(tree_oid))?;
 
                     // commit the current tree
                     {
-                        let sig = self.repo.signature()
-                            .map_err(DBErr::Git)?;
+                        let sig = self.repo.signature()?;
 
-                        let head_oid = self.repo.head().map_err(DBErr::Git)?.target()
+                        let head_oid = self.repo.head()?.target()
                             .ok_or(DBErr::State(format!("Failed to find oid referenced by HEAD")))?;
-                        let head_commit = self.repo.find_commit(head_oid)
-                            .map_err(DBErr::Git)?;
+                        let head_commit = self.repo.find_commit(head_oid)?;
 
                         let commit_msg = format!("merge commit from site: {}", sess.site_id);
                         let parent_commits = &[&head_commit, &remote_commit];
-                        self.repo.commit(Some("HEAD"), &sig, &sig, &commit_msg, &tree, parent_commits)
-                            .map_err(DBErr::Git)?;
+                        self.repo.commit(Some("HEAD"), &sig, &sig, &commit_msg, &tree, parent_commits)?;
                     }
                     println!("done merge commit");
                 }
@@ -377,8 +322,7 @@ impl DB {
         let mut push_opt = git2::PushOptions::new();
         push_opt.remote_callbacks(remote.git_callbacks());
 
-        git_remote.push(&[&"refs/heads/master"], Some(&mut push_opt))
-            .map_err(DBErr::Git)?;
+        git_remote.push(&[&"refs/heads/master"], Some(&mut push_opt))?;
         println!("Finish push");
         
         // TAI: should return stats struct
@@ -392,7 +336,7 @@ impl DB {
 
         println!("merging added file {:?}", rel_path);
 
-        let new_blob = self.repo.find_blob(new.id()).map_err(DBErr::Git)?;
+        let new_blob = self.repo.find_blob(new.id())?;
         Encrypted::from_bytes(&new_blob.content())?.write(&filepath)?;
         
         println!("wrote added file to workdir");
@@ -406,8 +350,8 @@ impl DB {
         let filepath = self.root.join(&rel_path);
 
         println!("merging {:?}", rel_path);
-        let old_blob = self.repo.find_blob(old.id()).map_err(DBErr::Git)?;
-        let new_blob = self.repo.find_blob(new.id()).map_err(DBErr::Git)?;
+        let old_blob = self.repo.find_blob(old.id())?;
+        let new_blob = self.repo.find_blob(new.id())?;
         let old_cryptic = old_blob.content();
         let new_cryptic = new_blob.content();
 
@@ -416,11 +360,9 @@ impl DB {
 
         println!("decrypted old and new");
         
-        let mut old_reg: ditto::Register<Block> = rmp_serde::from_slice(&old_plain.data)
-            .map_err(DBErr::SerdeDe)?;
+        let mut old_reg: ditto::Register<Block> = rmp_serde::from_slice(&old_plain.data)?;
 
-        let mut new_reg: ditto::Register<Block> = rmp_serde::from_slice(&new_plain.data)
-            .map_err(DBErr::SerdeDe)?;
+        let mut new_reg: ditto::Register<Block> = rmp_serde::from_slice(&new_plain.data)?;
 
         println!("parsed old and new registers");
 
@@ -437,7 +379,7 @@ impl DB {
         old_reg.update(merged_block, sess.site_id);
         
         Plaintext {
-            data: rmp_serde::to_vec(&old_reg).map_err(DBErr::SerdeEn)?,
+            data: rmp_serde::to_vec(&old_reg)?,
             config: Config::fresh_default()?
         }.encrypt(&mut sess)?.write(&filepath)?;
 
@@ -457,118 +399,11 @@ impl DB {
     }
 
     fn stage_file(&self, file: &std::path::Path) -> Result<()> {
-        let mut index = self.repo.index().map_err(DBErr::Git)?;
-        index.add_path(&file).map_err(DBErr::Git)?;
-        index.write().map_err(DBErr::Git)?;
+        let mut index = self.repo.index()?;
+        index.add_path(&file)?;
+        index.write()?;
         Ok(())
     }
-    
-//    fn pull_remote(&self, remote: &Remote) -> Result<()> {
-//        println!("Pulling from remote: {}", remote.name);
-//        let mut git_remote = self.repo.find_remote(&remote.name)
-//            .map_err(|e| format!("Failed to find remote {}: {:?}", remote.name, e))?;
-//
-//        let mut fetch_opt = git2::FetchOptions::new();
-//        fetch_opt.remote_callbacks(remote.git_callbacks());
-//        git_remote.fetch(&["master"], Some(&mut fetch_opt), None)
-//            .map_err(|e| format!("Failed to fetch remote {}: {:?}", remote.name, e))?;
-//
-//        let branch_res = self.repo.find_branch("master", git2::BranchType::Remote);
-//
-//        if branch_res.is_err() {
-//            return Ok(()); // remote does not have a tracking branch, this happens on initialization (client has not pushed yet)
-//        }
-//        
-//        let remote_branch_oid = branch_res.unwrap().get() // branch reference
-//            .resolve() // direct reference
-//            .map_err(|e| format!("Failed to resolve remote branch {} OID: {:?}", remote.name, e))
-//            ?.target() // OID of latest commit on remote branch
-//            .ok_or(format!("Failed to fetch remote oid: remote {}", remote.name))?;
-//
-//        let remote_commit = self.repo
-//            .find_annotated_commit(remote_branch_oid)
-//            .map_err(|e| format!("Failed to find commit for remote banch {}: {:?}", remote.name, e))?;
-//
-//        self.repo.merge(&[&remote_commit], None, None)
-//            .map_err(|e| format!("Failed merge from remote {}: {:?}", remote.name, e))?;
-//        
-//        let index = self.repo.index()
-//            .map_err(|e| format!("Failed to read index: {:?}", e))?;
-//
-//        if index.has_conflicts() {
-//            panic!("I don't know how to handle conflicts yet!!!!!!!!!!!!!");
-//        }
-//
-//        let stats = self.repo.diff_index_to_workdir(None, None)
-//            .map_err(|e| format!("Failed diff index: {:?}", e))?.stats()
-//            .map_err(|e| format!("Failed to get diff stats: {:?}", e))?;
-//
-//        if stats.files_changed() > 0 {
-//            println!("{} files changed (+{}, -{})",
-//                     stats.files_changed(),
-//                     stats.insertions(),
-//                     stats.deletions());
-//
-//            let remote_commit = self.repo.find_commit(remote_branch_oid)
-//                .map_err(|e| format!("Failed to find remote commit: {:?}", e))?;
-//
-//            let msg = format!("Mona Sync from {}: {}",
-//                              remote.name,
-//                              time::now().asctime());
-//
-//            self.commit(&msg, &vec![&remote_commit])?;
-//            self.push_remote(&remote)?;
-//        }
-//        
-//        // TAI: should return stats struct
-//        Ok(())
-//    }
-
-//    pub fn push_remote(&self, remote: &Remote) -> Result<()> {
-//        println!("Pushing to remote {} {}", remote.name, remote.url);
-//        let mut git_remote = self.repo.find_remote(&remote.name)
-//            .map_err(|e| format!("Failed to find remote with name {}: {:?}", remote.name, e))?;
-//
-//        let mut fetch_opt = git2::PushOptions::new();
-//        fetch_opt.remote_callbacks(remote.git_callbacks());
-//
-//        git_remote.push(&[&"refs/heads/master:refs/heads/master"], Some(&mut fetch_opt))
-//            .map_err(|e| format!("Failed to push remote {}: {:?}", remote.name, e))?;
-//        println!("Finish push");
-//        Ok(())
-//    }
-
-//    pub fn sync(&self, mut sess: &mut Session) -> Result<()> {
-//        for remote in self.remotes(&mut sess)?.remotes.iter() {
-//            self.pull_remote(&remote)?;
-//        }
-//
-//        let mut index = self.repo.index()
-//            .map_err(|e| format!("Failed to fetch index: {:?}", e))?;
-//
-//        let stats = self.repo.diff_index_to_workdir(None, None)
-//            .map_err(|e| format!("Failed diff index: {:?}", e))?.stats()
-//            .map_err(|e| format!("Failed to get diff stats: {:?}", e))?;
-//
-//        println!("files changed: {}", stats.files_changed());
-//
-//        if stats.files_changed() > 0 {
-//            index.add_all(["*"].iter(), git2::ADD_DEFAULT, None)
-//                .map_err(|e| format!("Failed to add files to index: {:?}", e))?;
-//            let timestamp_commit_msg = format!("Mona: {}", time::now().asctime());
-//            self.commit(&timestamp_commit_msg, &Vec::new())?;
-//        }
-//
-//        // TODO: is this needed?
-//        &self.repo.checkout_head(None)
-//            .map_err(|e| format!("Failed to checkout head: {:?}", e))?;
-//
-//        // now need to push to all remotes
-//        for remote in self.remotes(&mut sess)?.remotes.iter() {
-//            self.push_remote(&remote)?;
-//        }
-//        Ok(())
-//    }
 }
 
 #[cfg(test)]
