@@ -1,8 +1,9 @@
 extern crate data_encoding;
-
-pub fn decode(encoded: &str) -> Result<Vec<u8>, String> {
+use db_error::{Result, DBErr};
+    
+pub fn decode(encoded: &str) -> Result<Vec<u8>> {
     data_encoding::HEXLOWER.decode(encoded.as_bytes())
-        .map_err(|e| format!("Failed decode {:?}", e))
+        .map_err(DBErr::DataEncodingDecode)
 }
 
 pub fn encode(data: &[u8]) -> String {

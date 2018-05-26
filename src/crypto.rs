@@ -49,14 +49,14 @@ impl Session {
     pub fn create_key_file(&mut self) -> Result<(), DBErr> {
         let key_file_path = self.root.join("key_file");
         if key_file_path.is_file() {
-            return Err(DBErr::State(String::from("Attempting to create a key_file when one exists")));
+            return Err(DBErr::State("Attempting to create a key_file when one exists".into()));
         }
 
         assert!(self.key_file.is_none());
 
         let key_file = gen_rand_256()?;
-        let mut f = std::fs::File::create(key_file_path).map_err(DBErr::IO)?;
-        f.write_all(&key_file).map_err(DBErr::IO)?;
+        let mut f = std::fs::File::create(key_file_path)?;
+        f.write_all(&key_file)?;
 
         self.key_file = Some(key_file);
         Ok(())
@@ -72,15 +72,15 @@ impl Session {
         } else {
             let key_file_path = self.root.join("key_file");
             if !key_file_path.is_file() {
-                return Err(DBErr::State(String::from("Attempting to read key_file when one does not exist")));
+                return Err(DBErr::State("Attempting to read key_file when one does not exist".into()));
             }
             
-            let mut f = std::fs::File::open(&key_file_path).map_err(DBErr::IO)?;
+            let mut f = std::fs::File::open(&key_file_path)?;
 
-            assert_eq!(std::fs::metadata(&key_file_path).map_err(DBErr::IO)?.len(), 256/8);
+            assert_eq!(std::fs::metadata(&key_file_path)?.len(), 256/8);
 
             let mut key_file = [0u8; 256/8];
-            f.read_exact(&mut key_file).map_err(DBErr::IO)?;
+            f.read_exact(&mut key_file)?;
             self.key_file = Some(key_file.clone());
             Ok(key_file)
         }
@@ -122,7 +122,7 @@ impl Config {
     /// format: [ version (1 byte) | iters (4 bytes) | salt (256 / 8 = 32 bytes) ]
     pub fn from_bytes(bytes: &[u8]) -> Result<Config, DBErr> {
         if bytes.len() == 0 {
-            return Err(DBErr::Parse(String::from("Nothing to parse (bytes.len() == 0)")));
+            return Err(DBErr::Parse("Nothing to parse (bytes.len() == 0)".into()));
         }
 
         let version = bytes[0];
@@ -170,7 +170,7 @@ impl Plaintext {
         // TAI: compress before encrypt
 
         if self.config.consumed {
-            return Err(DBErr::Crypto(String::from("Attempted to encrypt with an already consumed config")));
+            return Err(DBErr::Crypto("Attempted to encrypt with an already consumed config".into()));
         }
 
         assert_eq!(self.config.consumed, false);
@@ -198,17 +198,14 @@ impl Encrypted {
     }
     
     pub fn read(file_path: &std::path::Path) -> Result<Encrypted, DBErr> {
-        let mut f = std::fs::File::open(file_path)
-            .map_err(DBErr::IO)?;
+        let mut f = std::fs::File::open(file_path)?;
         
         let mut config_bytes = vec![0u8; Config::serialized_byte_count()];
-        f.read_exact(&mut config_bytes)
-            .map_err(DBErr::IO)?;
+        f.read_exact(&mut config_bytes)?;
         let config = Config::from_bytes(&config_bytes)?;
 
         let mut data = Vec::new();
-        f.read_to_end(&mut data)
-            .map_err(DBErr::IO)?;
+        f.read_to_end(&mut data)?;
 
         Ok(Encrypted {
             ciphertext: data,
@@ -219,25 +216,22 @@ impl Encrypted {
     pub fn write(&self, file_path: &std::path::Path) -> Result<(), DBErr> {
         match file_path.parent() {    
             Some(parent_path) =>
-                std::fs::create_dir_all(&parent_path).map_err(DBErr::IO),
+                std::fs::create_dir_all(&parent_path),
             None => Ok(()) // no parent to create
         }?;
 
         // File::create will replace existing files
-        let mut f = std::fs::File::create(file_path)
-                .map_err(DBErr::IO)?;
+        let mut f = std::fs::File::create(file_path)?;
 
         f.write_all(&self.config.to_bytes())
             .or_else(|e| {
-                std::fs::remove_file(file_path)
-                    .map_err(DBErr::IO)?;
+                std::fs::remove_file(file_path)?;
                 Err(DBErr::IO(e))
             })?;
         
         f.write_all(&self.ciphertext)
             .or_else(|e| {
-                std::fs::remove_file(file_path)
-                    .map_err(DBErr::IO)?;
+                std::fs::remove_file(file_path)?;
                 Err(DBErr::IO(e))
             })?;
         Ok(())
@@ -245,7 +239,13 @@ impl Encrypted {
 
     pub fn decrypt(&self, sess: &mut Session) -> Result<Plaintext, DBErr> {
         println!("decrypting....");
-        let plaintext_data = decrypt(&sess.pass()?, &sess.key_file()?, &self.ciphertext, &self.config)?;
+        let plaintext_data = decrypt(
+            &sess.pass()?,
+            &sess.key_file()?,
+            &self.ciphertext,
+            &self.config
+        )?;
+
         let plaintext = Plaintext {
             data: plaintext_data.to_vec(),
             config: self.config.clone()
@@ -276,7 +276,7 @@ pub fn encrypt(pass: &[u8], key_file: &[u8; 256/8], data: &[u8], config: &mut Co
     }
 
     if config.consumed {
-        return Err(DBErr::Crypto(String::from("ATTEMPTING TO ENCRYPT WITH A SALT WHICH HAS ALREADY BEEN CONSUMED")));
+        return Err(DBErr::Crypto("ATTEMPTING TO ENCRYPT WITH A SALT WHICH HAS ALREADY BEEN CONSUMED".into()));
     }
 
     config.consumed = true;
@@ -289,7 +289,7 @@ pub fn encrypt(pass: &[u8], key_file: &[u8; 256/8], data: &[u8], config: &mut Co
     }
 
     let seal_key = aead::SealingKey::new(aead_algo, &key)
-        .map_err(|_| DBErr::Crypto(String::from("Failed to generate a sealing key")))?;
+        .map_err(|_| DBErr::Crypto("Failed to generate a sealing key".into()))?;
 
     let mut in_out = Vec::with_capacity(data.len() + seal_key.algorithm().tag_len());
     in_out.extend(data.iter());
@@ -298,7 +298,7 @@ pub fn encrypt(pass: &[u8], key_file: &[u8; 256/8], data: &[u8], config: &mut Co
     let nonce = [0u8; 96 / 8]; // see crypto design doc (we never encrypt with the same key twice)
 
     aead::seal_in_place(&seal_key, &nonce, &ad, &mut in_out, seal_key.algorithm().tag_len())
-        .map_err(|_| DBErr::Crypto(String::from("Failed to encrypt with AEAD")))?;
+        .map_err(|_| DBErr::Crypto("Failed to encrypt with AEAD".into()))?;
 
     Ok(in_out)
 }
@@ -312,7 +312,7 @@ pub fn decrypt(pass: &[u8], key_file: &[u8; 256/8], ciphertext: &[u8], config: &
     }
     
     let opening_key = aead::OpeningKey::new(aead_algo, &key)
-        .map_err(|_| DBErr::Crypto(String::from("Failed to create key when decrypting")))?;
+        .map_err(|_| DBErr::Crypto("Failed to create key when decrypting".into()))?;
 
     let mut in_out = Vec::new();
     in_out.extend(ciphertext.iter());
@@ -321,7 +321,7 @@ pub fn decrypt(pass: &[u8], key_file: &[u8; 256/8], ciphertext: &[u8], config: &
     let nonce = [0u8; 96 / 8]; // see crypto design doc (we never encrypt with the same key twice)
 
     let plaintext = aead::open_in_place(&opening_key, &nonce, &ad, 0, &mut in_out)
-        .map_err(|_| DBErr::Crypto(String::from("Failed to decrypt")))?;
+        .map_err(|_| DBErr::Crypto("Failed to decrypt".into()))?;
 
     Ok(plaintext.to_vec())
 }
@@ -362,7 +362,7 @@ pub fn gen_rand(bytes: usize) -> Result<Vec<u8>, DBErr> {
     // TAI: Should this rng live in a session so we don't have to recreate it each time?
     SystemRandom::new()
         .fill(&mut buf)
-        .map_err(|_| DBErr::Crypto(String::from("Failed to generate random pbkdf2 salt")))?;
+        .map_err(|_| DBErr::Crypto("Failed to generate random pbkdf2 salt".into()))?;
     Ok(buf)
 }
 
@@ -374,7 +374,7 @@ pub fn gen_rand_256() -> Result<[u8; 256/8], DBErr> {
     // TAI: Should this rng live in a session so we don't have to recreate it each time?
     SystemRandom::new()
         .fill(&mut buf)
-        .map_err(|_| DBErr::Crypto(String::from("Failed to generate 256 bits of random")))?;
+        .map_err(|_| DBErr::Crypto("Failed to generate 256 bits of random".into()))?;
     Ok(buf)
 }
 
@@ -449,7 +449,7 @@ mod test {
 
     #[test]
     fn plaintext_encrypt_decrypt() {
-        let msg = "I love you";
+        let msg = "I kinda like you";
         let mut plain = Plaintext {
             data: msg.as_bytes().to_vec(),
             config: Config::fresh_default().unwrap()
@@ -479,7 +479,7 @@ mod test {
         assert_eq!(plain.config.pbkdf2_salt, plain2.config.pbkdf2_salt);
 
         let decrypted_string = String::from_utf8(plain2.data).unwrap();
-        assert_eq!(decrypted_string, "I love you");
+        assert_eq!(decrypted_string, "I kinda like you");
     }
 
     #[test]
