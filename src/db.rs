@@ -9,7 +9,7 @@ use self::git2::{Repository, Commit};
 
 use std::path::{PathBuf, Path};
 
-use db_error::{Result, DBErr};
+use error::{Result, Error};
 use crypto::{Session, Plaintext, Encrypted, Config, gen_rand_256};
 use remote::Remote;
 use block::{Block, Blockable};
@@ -51,7 +51,7 @@ mod git_helper {
         let parent: Option<Commit> = match repo.head() {
             Ok(head_ref) => {
                 let head_oid = head_ref.target()
-                    .ok_or(DBErr::State(format!("Failed to find oid referenced by HEAD")))?;
+                    .ok_or(Error::State(format!("Failed to find oid referenced by HEAD")))?;
                 let head_commit = repo.find_commit(head_oid)?;
                 Some(head_commit)
             },
@@ -97,7 +97,7 @@ mod git_helper {
     pub fn fast_forward(repo: &Repository, branch: &git2::Branch) -> Result<()> {
         println!("fast forwarding repository to match branch {:?}", branch.name()?);
         let remote_commit_oid = branch.get().resolve()?.target()
-            .ok_or(DBErr::State("remote ref didn't resolve to commit".into()))?;
+            .ok_or(Error::State("remote ref didn't resolve to commit".into()))?;
 
         let remote_commit = repo.find_commit(remote_commit_oid)?;
 
@@ -125,7 +125,7 @@ mod git_helper {
         if let Ok(branch) = repo.find_branch(&remote_master_ref, git2::BranchType::Remote) {
             println!("found remote master branch");
             let remote_commit_oid = branch.get().resolve()?.target()
-                .ok_or(DBErr::State("remote ref didn't resolve to commit".into()))?;
+                .ok_or(Error::State("remote ref didn't resolve to commit".into()))?;
 
             let remote_annotated_commit = repo.find_annotated_commit(remote_commit_oid)?;
 
@@ -149,7 +149,7 @@ mod git_helper {
             } else if analysis == git2::MergeAnalysis::ANALYSIS_UP_TO_DATE {
                 println!("nothing to merge, ahead of remote");
             } else {
-                return Err(DBErr::State(format!("Bad merge analysis result: {:?}", analysis)));
+                return Err(Error::State(format!("Bad merge analysis result: {:?}", analysis)));
             }
         }
         
@@ -246,13 +246,13 @@ impl DB {
             let block_reg: ditto::Register<Block> = rmp_serde::from_slice(&plaintext.data)?;
             Ok(block_reg.get().to_owned())
         } else {
-            Err(DBErr::NotFound)
+            Err(Error::NotFound)
         }
     }
 
     pub fn write_block(&self, key: &str, block: &Block, mut sess: &mut Session) -> Result<()> {
         if key.len() == 0 {
-            return Err(DBErr::State("Attempting to write empty key to root path".into()));
+            return Err(Error::State("Attempting to write empty key to root path".into()));
         }
 
         let rel_path = Path::new("cryptic")
@@ -270,7 +270,7 @@ impl DB {
 
             let new_block: Block = match existing_block.merge(&block) {
                 Ok(()) => Ok(existing_block),
-                Err(DBErr::BlockTypeConflict) => Ok(block.clone()),
+                Err(Error::BlockTypeConflict) => Ok(block.clone()),
                 Err(e) => Err(e)
             }?;
 
@@ -337,7 +337,7 @@ impl DB {
 
     fn merge_add_file(&self, new: &git2::DiffFile) -> Result<()> {
         let rel_path = new.path()
-            .ok_or_else(|| DBErr::State("added file doesn't have a path!?".into()))?;
+            .ok_or_else(|| Error::State("added file doesn't have a path!?".into()))?;
         let filepath = self.root.join(&rel_path);
 
         println!("merging added file {:?}", rel_path);
@@ -352,7 +352,7 @@ impl DB {
 
     fn merge_mod_files(&self, old: &git2::DiffFile, new: &git2::DiffFile, mut sess: &mut Session) -> Result<()> {
         let rel_path = old.path()
-            .ok_or_else(|| DBErr::State("old file doesn't have a path!?".into()))?;
+            .ok_or_else(|| Error::State("old file doesn't have a path!?".into()))?;
         let filepath = self.root.join(&rel_path);
 
         println!("merging {:?}", rel_path);
@@ -377,7 +377,7 @@ impl DB {
 
         let merged_block = match old_block.merge(&new_block) {
             Ok(()) => Ok(old_block.to_owned()),
-            Err(DBErr::BlockTypeConflict) => Ok(new_block),
+            Err(Error::BlockTypeConflict) => Ok(new_block),
             Err(e) => Err(e)
         }?;
 

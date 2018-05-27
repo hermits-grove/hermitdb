@@ -11,7 +11,7 @@ extern crate git2;
 extern crate ditto;
 extern crate serde;
 
-use db_error::Result;
+use error::Result;
 use block::{Blockable, Block, Prim};
 use db::DB;
 use crypto::Session;

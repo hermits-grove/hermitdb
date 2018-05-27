@@ -2,7 +2,7 @@ extern crate ditto;
 
 use std;
 
-use db_error::{Result, DBErr};
+use error::{Result, Error};
 
 pub trait Blockable {
     fn blocks(&self) -> Vec<(String, Block)>;
@@ -50,42 +50,42 @@ impl Block {
             (Block::Set(x), Block::Set(y)) => Ok(x.merge(&y)),
             (Block::Map(x), Block::Map(y)) => Ok(x.merge(&y)),
             (Block::List(x), Block::List(y)) => Ok(x.merge(&y)),
-            (_, _) => Err(DBErr::BlockTypeConflict)
+            (_, _) => Err(Error::BlockTypeConflict)
         }
     }
 
     pub fn to_val(&self) -> Result<ditto::Register<Prim>> {
         match self {
             Block::Val(v) => Ok(v.clone()),
-            Block::Set(_) => Err(DBErr::State("Expected Val got Set".into())),
-            Block::Map(_) => Err(DBErr::State("Expected Val got Map".into())),
-            Block::List(_) => Err(DBErr::State("Expected Val got List".into()))
+            Block::Set(_) => Err(Error::State("Expected Val got Set".into())),
+            Block::Map(_) => Err(Error::State("Expected Val got Map".into())),
+            Block::List(_) => Err(Error::State("Expected Val got List".into()))
         }
     }
 
     pub fn to_set(&self) -> Result<ditto::Set<Prim>> {
         match self {
-            Block::Val(_) => Err(DBErr::State("Expected Set got Val".into())),
+            Block::Val(_) => Err(Error::State("Expected Set got Val".into())),
             Block::Set(s) => Ok(s.clone()),
-            Block::Map(_) => Err(DBErr::State("Expected Set got Map".into())),
-            Block::List(_) => Err(DBErr::State("Expected Set got List".into()))
+            Block::Map(_) => Err(Error::State("Expected Set got Map".into())),
+            Block::List(_) => Err(Error::State("Expected Set got List".into()))
         }
     }
 
     pub fn to_map(&self) -> Result<ditto::Map<Prim, Prim>> {
         match self {
-            Block::Val(_) => Err(DBErr::State("Expected Map got Val".into())),
-            Block::Set(_) => Err(DBErr::State("Expected Map got Set".into())),
+            Block::Val(_) => Err(Error::State("Expected Map got Val".into())),
+            Block::Set(_) => Err(Error::State("Expected Map got Set".into())),
             Block::Map(m) => Ok(m.clone()),
-            Block::List(_) => Err(DBErr::State("Expected Map got List".into()))
+            Block::List(_) => Err(Error::State("Expected Map got List".into()))
         }
     }
 
     pub fn to_list(&self) -> Result<ditto::List<Prim>> {
         match self {
-            Block::Val(_) => Err(DBErr::State("Expected List got Val".into())),
-            Block::Set(_) => Err(DBErr::State("Expected List got Set".into())),
-            Block::Map(_) => Err(DBErr::State("Expected List got Map".into())),
+            Block::Val(_) => Err(Error::State("Expected List got Val".into())),
+            Block::Set(_) => Err(Error::State("Expected List got Set".into())),
+            Block::Map(_) => Err(Error::State("Expected List got Map".into())),
             Block::List(l) => Ok(l.clone())
         }
     }
@@ -95,35 +95,35 @@ impl Prim {
     pub fn to_u64(&self) -> Result<u64>{
         match self {
             Prim::U64(v) => Ok(*v),
-            Prim::F64(_) => Err(DBErr::State("Expected U64 got F64".into())),
-            Prim::Str(_) => Err(DBErr::State("Expected U64 got Str".into())),
-            Prim::Bytes(_) => Err(DBErr::State("Expected U64 got Bytes".into()))
+            Prim::F64(_) => Err(Error::State("Expected U64 got F64".into())),
+            Prim::Str(_) => Err(Error::State("Expected U64 got Str".into())),
+            Prim::Bytes(_) => Err(Error::State("Expected U64 got Bytes".into()))
         }
     }
 
     pub fn to_f64(&self) -> Result<f64>{
         match self {
-            Prim::U64(_) => Err(DBErr::State("Expected F64 got U64".into())),
+            Prim::U64(_) => Err(Error::State("Expected F64 got U64".into())),
             Prim::F64(v) => Ok(*v),
-            Prim::Str(_) => Err(DBErr::State("Expected F64 got Str".into())),
-            Prim::Bytes(_) => Err(DBErr::State("Expected F64 got Bytes".into()))
+            Prim::Str(_) => Err(Error::State("Expected F64 got Str".into())),
+            Prim::Bytes(_) => Err(Error::State("Expected F64 got Bytes".into()))
         }
     }
 
     pub fn to_string(&self) -> Result<String>{
         match self {
-            Prim::U64(_) => Err(DBErr::State("Expected Str got U64".into())),
-            Prim::F64(_) => Err(DBErr::State("Expected Str got F64".into())),
+            Prim::U64(_) => Err(Error::State("Expected Str got U64".into())),
+            Prim::F64(_) => Err(Error::State("Expected Str got F64".into())),
             Prim::Str(v) => Ok(v.clone()),
-            Prim::Bytes(_) => Err(DBErr::State("Expected Str got Bytes".into()))
+            Prim::Bytes(_) => Err(Error::State("Expected Str got Bytes".into()))
         }
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         match self {
-            Prim::U64(_) => Err(DBErr::State("Expected Bytes got U64".into())),
-            Prim::F64(_) => Err(DBErr::State("Expected Bytes got F64".into())),
-            Prim::Str(_) => Err(DBErr::State("Expected Bytes got Str".into())),
+            Prim::U64(_) => Err(Error::State("Expected Bytes got U64".into())),
+            Prim::F64(_) => Err(Error::State("Expected Bytes got F64".into())),
+            Prim::Str(_) => Err(Error::State("Expected Bytes got Str".into())),
             Prim::Bytes(v) => Ok(v.clone())
         }
     }

@@ -5,10 +5,10 @@ extern crate data_encoding;
 
 use std;
 
-pub type Result<T> = std::result::Result<T, DBErr>;
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
-pub enum DBErr {
+pub enum Error {
     NotFound,
     BlockTypeConflict,
     Parse(String),
@@ -25,32 +25,32 @@ pub enum DBErr {
 }
 
 
-impl From<git2::Error> for DBErr {
+impl From<git2::Error> for Error {
     fn from(err: git2::Error) -> Self {
-        DBErr::Git(err)
+        Error::Git(err)
     }
 }
 
-impl From<std::io::Error> for DBErr {
+impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
-        DBErr::IO(err)
+        Error::IO(err)
     }
 }
 
-impl From<rmp_serde::decode::Error> for DBErr {
+impl From<rmp_serde::decode::Error> for Error {
     fn from(err: rmp_serde::decode::Error) -> Self {
-        DBErr::SerdeRMPDecode(err)
+        Error::SerdeRMPDecode(err)
     }
 }
 
-impl From<rmp_serde::encode::Error> for DBErr {
+impl From<rmp_serde::encode::Error> for Error {
     fn from(err: rmp_serde::encode::Error) -> Self {
-        DBErr::SerdeRMPEncode(err)
+        Error::SerdeRMPEncode(err)
     }
 }
 
-impl From<data_encoding::DecodeError> for DBErr {
+impl From<data_encoding::DecodeError> for Error {
     fn from(err: data_encoding::DecodeError) -> Self {
-        DBErr::DataEncodingDecode(err)
+        Error::DataEncodingDecode(err)
     }
 }
