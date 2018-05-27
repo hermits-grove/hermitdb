@@ -87,6 +87,13 @@ mod git_helper {
         Ok(())
     }
 
+    pub fn stage_file(repo: &Repository, file: &Path) -> Result<()> {
+        let mut index = repo.index()?;
+        index.add_path(&file)?;
+        index.write()?;
+        Ok(())
+    }
+
     pub fn fast_forward(repo: &Repository, branch: &git2::Branch) -> Result<()> {
         println!("fast forwarding repository to match branch {:?}", branch.name()?);
         let remote_commit_oid = branch.get().resolve()?.target()
@@ -174,7 +181,8 @@ impl DB {
 
     pub fn init_from_remote(root: &Path, remote: &Remote, mut sess: &mut Session) -> Result<DB> {
         println!("initializing from remote");
-        git_helper::sync(&Repository::init(&root)?, &remote, &mut |_, _| false)?;
+        let empty_repo = Repository::init(&root)?;
+        git_helper::sync(&empty_repo, &remote, &mut |_, _| false)?;
 
         let db = DB::init(&root, &mut sess)?;
         db.write_remote(&remote, &mut sess)?;
@@ -195,7 +203,7 @@ impl DB {
                 config: Config::fresh_default()?
             }.encrypt(&mut sess)?.write(&key_salt_filepath)?;
 
-            self.stage_file(&key_salt)?;
+            git_helper::stage_file(&self.repo, &key_salt)?;
         }
 
         Ok(())
@@ -228,7 +236,6 @@ impl DB {
     }
 
     pub fn read_block(&self, key: &str, mut sess: &mut Session) -> Result<Block> {
-
         let block_filepath = self.root
             .join("cryptic")
             .join(&self.derive_key_filepath(&key, &mut sess)?);
@@ -243,48 +250,52 @@ impl DB {
         }
     }
 
+    pub fn write_block(&self, key: &str, block: &Block, mut sess: &mut Session) -> Result<()> {
+        if key.len() == 0 {
+            return Err(DBErr::State("Attempting to write empty key to root path".into()));
+        }
+
+        let rel_path = Path::new("cryptic")
+            .join(self.derive_key_filepath(&key, &mut sess)?);
+        let block_filepath = self.root
+            .join(&rel_path);
+
+        println!("write_block {}\n\t{:?}", key, rel_path);
+
+        let register = if block_filepath.exists() {
+            let plaintext = Encrypted::read(&block_filepath)?.decrypt(&mut sess)?;
+
+            let mut existing_reg: ditto::Register<Block> = rmp_serde::from_slice(&plaintext.data)?;
+            let mut existing_block = existing_reg.clone().get().to_owned();
+
+            let new_block: Block = match existing_block.merge(&block) {
+                Ok(()) => Ok(existing_block),
+                Err(DBErr::BlockTypeConflict) => Ok(block.clone()),
+                Err(e) => Err(e)
+            }?;
+
+            existing_reg.update(new_block, sess.site_id);
+            existing_reg
+        } else {
+            ditto::Register::new(block.clone(), sess.site_id)
+        };
+        
+        Plaintext {
+            data: rmp_serde::to_vec(&register)?,
+            config: Config::fresh_default()?
+        }.encrypt(&mut sess)?.write(&block_filepath)?;
+
+        git_helper::stage_file(&self.repo, &rel_path)?;
+        Ok(())
+    }
+
     pub fn write(&self, prefix: &str, data: &impl Blockable, mut sess: &mut Session) -> Result<()> {
         for (suffix, block) in data.blocks().into_iter() {
             let mut key = String::with_capacity(prefix.len() + suffix.len());
             key.push_str(&prefix);
             key.push_str(&suffix);
 
-            if key.len() == 0 {
-                return Err(DBErr::State("Attempting to write empty key to root path".into()));
-            }
-
-            let rel_path = Path::new("cryptic")
-                .join(self.derive_key_filepath(&key, &mut sess)?);
-            let block_filepath = self.root
-                .join(&rel_path);
-
-            println!("write {}\n\t{:?}", key, rel_path);
-
-            let register = if block_filepath.exists() {
-                let plaintext = Encrypted::read(&block_filepath)?.decrypt(&mut sess)?;
-
-                let mut existing_reg: ditto::Register<Block> = rmp_serde::from_slice(&plaintext.data)?;
-
-                let mut existing_block = existing_reg.clone().get().to_owned();
-
-                let new_block = match existing_block.merge(&block) {
-                    Ok(()) => Ok(existing_block.to_owned()),
-                    Err(DBErr::BlockTypeConflict) => Ok(block),
-                    Err(e) => Err(e)
-                }?;
-
-                existing_reg.update(new_block, sess.site_id);
-                existing_reg
-            } else {
-                ditto::Register::new(block, sess.site_id)
-            };
-        
-            Plaintext {
-                data: rmp_serde::to_vec(&register)?,
-                config: Config::fresh_default()?
-            }.encrypt(&mut sess)?.write(&block_filepath)?;
-
-            self.stage_file(&rel_path)?;
+            self.write_block(&key, &block, &mut sess)?;
         }
         Ok(())
     }
@@ -335,7 +346,7 @@ impl DB {
         Encrypted::from_bytes(&new_blob.content())?.write(&filepath)?;
         
         println!("wrote added file to workdir");
-        self.stage_file(&rel_path)?;
+        git_helper::stage_file(&self.repo, &rel_path)?;
         Ok(())
     }
 
@@ -378,7 +389,7 @@ impl DB {
             config: Config::fresh_default()?
         }.encrypt(&mut sess)?.write(&filepath)?;
 
-        self.stage_file(&rel_path)?;
+        git_helper::stage_file(&self.repo, &rel_path)?;
 
         Ok(())
     }
@@ -391,13 +402,6 @@ impl DB {
         // TODO: remove the other remote before writing, read has a noauth bias
         // TODO: https://docs.rs/git2/0.7.0/git2/struct.Remote.html#method.is_valid_name
         self.write("db$config$remote", remote, &mut sess)
-    }
-
-    fn stage_file(&self, file: &Path) -> Result<()> {
-        let mut index = self.repo.index()?;
-        index.add_path(&file)?;
-        index.write()?;
-        Ok(())
     }
 }
 
