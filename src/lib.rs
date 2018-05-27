@@ -9,4 +9,4 @@ pub mod remote;
 pub mod db;
 pub mod block;
 
-pub use error::Error
+pub use error::Error;
