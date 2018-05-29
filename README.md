@@ -1,204 +1,46 @@
-# GitDB
+# gitdb
 
-###### A Security First Datastore for User Focused Applications
+###### A privacy concious database for apps that respect user privacy 
 
-GitDB aims to provide an encrypted distributed database for offline first user focused apps. Think todo apps, password managers, etc.
+#### Should you use gitdb?
 
-Applications built using GitDB give users control over their data while maintaining the many of the conveniences of centralized applications.
+ Gitdb is not fast and it's features and tooling are bare bones, but... it may be just enough.
 
-By using Git we inherit:
+Gitdb's goals is to be a fast-enough, offline-first, distributed key-value store with strong confidentiality and support for automated conflict resolution.
 
-1. a solid distributed foundation for our database
+Applications built using gitdb tap into a large federated network for storing data: Git is a widely deployed and well understood protocol, technical users have a wide selection of storage options to choose from, they may pay Github, Gitlab, Bitbucket, etc.. or even host their own Git server. 
 
-2. all existing infrastructure and tooling for managing Git repositories (github, gitlab, etc.)
+The original motivator for gitdb was *mona,* a password manager which relied on Git to manage state across devices (*[the project is in development here.](https://github.com/the-gitdb-cooperative/mona)*)
 
-On top of Git, GitDB adds encryption, a collection of CRDT data structures, and a Query interface.
+*You should consider using gitdb if you care for user agancy over their data **and** you do not need to store obscene amounts of data / perform 100s of operations per second*
 
 ## Design
 
-Staying true to Git's roots, GitDB wraps a tree based key value store on top of a content addressable storage (CAS) core.
+The main abstraction in gitdb is the `Block` datatype, these are primitive CRDT's gitdb understands and can merge automatically. A `Block` is stored in gitdb as a single file on disk.
 
-We add 4 concepts on top of Git: `Block`, `Path`, `TreeBlock` and `BlobBlock`. These are encrypted varients of the familiar Git concepts of the `Object`, `file path`, `Tree` and `Blob` respectively.
+A `Block` stored in gitdb is uniquely referenced by a `key`. A `key` can be any utf-8 string.
 
-#### Block
+###### Mapping a key to a file on disk
 
-A `Block` is a single unit of data, `Block`'s are encrypted and stored on disk as a Git blob.
+Often metadata, like a block key, can be just as incriminating as the data stored in a block. To avoid leaking any sensitive information gitdb derives an obfuscated filepath from a key.
 
-#### Path
-
-A `Path` is a unique name that maps to a `Block`.
-
-###### Path Format
-
-`Path`'s begin with a `/` and are followed by zero or more *Path Components* interspersed with `/` .
-
-*Path components* may contain any unicode charactor besides the special charactors, special charactors are `\` and `/`. To use a special charactor you'll need to prefix it with the escape charactor `\`.
-
-*valid paths:* `/`,  `/a`, `/a/bb/ccc`, `/ /a\/b\\&$#/c `
-
-*invalid paths:*
-
-- ` ` : the empty path is invalid.
-- `/a/ ` : paths can't end in a `/`.
-- `/a//c` : paths can't have empty components.
-- `/a\b` :  can't escape non-special charactors.
-
-###### Mapping a Path to a file on disk
-
-To avoid leaking information about what is stored  on disk GitDB goes through a path obfuscation step before writing a file to disk.
-
-An encrypted salt is stored at the root of the Git repository `./salt`.
+The filepath derivation algorithm is outlined here
 
 ```haskell
-path <- "/a/b/c"
-encrypted_salt <- os.fs.read("$GIT_ROOT/salt")
-salt <- decrypt(secret_key, encrypted_salt) -- suppose salt == '$'
-obf <- sha256(salt ++ path) -- => sha256("$/a/b/c")
--- => d61f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a
-path_on_disk <- os.fs.path.join("$GIT_ROOT"), "cryptic", obf[0..2], obf[2..])
--- => $GIT_ROOT/cryptic/d6/1f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a
+key <- "mona#accounts#news.ycombinator.com#davidrusu@pass"
+key_salt <- decrypt(read_file("$GITDB_ROOT/key_salt"))
+hash <- sha256(key_salt ++ path)
+dir_part, file_part <- hash.split_at(2)
+filepath <- path.join("$GIT_ROOT", "cryptic", dir_part, file_part)
+-- => something like $GIT_ROOT/cryptic/d6/1f774e6...a97bde0b87a
 ```
 
-#### TreeBlock
-
-A `TreeBlock` is a `Block` that stores relationships between `Path`'s and `Block`'s. A `TreeBlock` stores entries of path's with a common prefix along with a flag telling us if this sub path is a `TreeBlock` or a `BlobBlock`.
-
-ie. If we've got a `BlobBlock` in our DB with path `/a/b`, then:
-
- the root tree `/` will have an entry: `TREE: a`
-
-the `/a` tree will have an entry: `BLOB: b`
-
-#### BlobBlock
-
-A `BlobBlock` is a block that appears in a `TreeBlock` with a `BLOB` flag. There's nothing else to differentiate a `BlobBlock` from another `Block`.
-
-### A Worked Example
-
-Suppose we've got two applications using the same GitDB database. `Mona: a password manager`, and `People: a contacts manager`.
-
-At the root we've got two path's `/mona` and `/people`, beneath these namespaces, the apps store their data.
-
-###### State of GitDB (assume salt == "")
-
-| Path                     | Path on disk             |
-| ------------------------ | ------------------------ |
-| /                        | ./cryptic/f4/65c3...4336 |
-| /mona                    | ./cryptic/aa/d821...03b9 |
-| /mona/config             | ./cryptic/f9/d010...a68c |
-| /mona/pass               | ./cryptic/48/b343...81ad |
-| /mona/pass/pagerduty.com | ./cryptic/77/dbbe...18fb |
-| /people                  | ./cryptic/00/fcbb...9fc3 |
-| /people/config           | ./cryptic/e4/3d3e...fe40 |
-| /people/contacts         | ./cryptic/9d/0fc8…7bf2   |
-| /people/contacts/farhana | ./cryptic/48/bf31...f6cb |
-| /people/contacts/marcel  | ./cryptic/88/a07e...8f8b |
-
-###### Traversing TreeBlock's from the root TreeBlock
-
-<img src="dot.png"></img>
-
-### Analysis of GitDB actions
-
-#### `db.tree_block(<path>)`
-
-Opens the requested `TreeBlock`, creating if it does not exist
-
-```
-db.tree_block("/a/b")
-```
-
-**prior state:** `salt == "$"`, `TreeBlock(/a)`, `TreeBlock(/a/b)` do not exist, `TreeBlock(/)` exists.
-
-1. `sha256("$/a/b") -> 03d4a92a45e0cddf2ec5a73efdd2582355d1df5ae80aae52f6b46d41f5607a4c`
-
-2. convert hash to path on disk: `./cryptic/03/d4a92a45e0cddf2ec5a73efdd2582355d1df5ae80aae52f6b46d41f5607a4c`
-
-3. attempt to decrypt this file, fails since it doesn't exist
-
-4. recursively call  `let mut parent = db.tree_block("\a")`
-
-5. add entry `b` to `/a` namespace: `parent.add_entry("b", TREE);`
-
-6. create empty `TreeBlock`, encrypt and store on disk at:
-
-    `./cryptic/03/d4a92a45e0cddf2ec5a73efdd2582355d1df5ae80aae52f6b46d41f5607a4c`
-
-Git repository state after call:
-
-```
-modified: ./cryptic/fe409a363a6f...38d78cb1e7211a5b // derived from sha256("$/")
-new file: ./cryptic/a25c798de63c...b0ef3c2e49f67054 // derived from sha256("$/a")
-new file: ./cryptic/03/d4a92a45e...f6b46d41f5607a4c // derived from sha256("$/a/b")
-```
-
-#### `db.put(<path>)`
-
-```rust
-db.put("/a/b/c", <encrypted blob>);
-```
-
-**prior state:** `salt == "$"`, `TreeBlock(/a/b)` exists.
-
-1. `sha256("$/a/b/c") -> d61f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a`
-2. convert hash to path on disk: `./cryptic/d6/1f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a`
-3. Ensure path doesn't exist
-4. open`TreeBlock(/a/b)`: `let mut tree = db.tree_block("/a/b");`
-5. add blob entry `c`  `TreeBlock(/a/b)`: `tree.add_entry("c", BLOB)`;
-6. Write `<encrypted blob>` to `./cryptic/d6/1f774e6a...b87a`
-
-Git repository state after call:
-
-```
-modified: ./cryptic/03/d4a92a45...7a4c // derived from sha256("$/a/b")
-new file: ./cryptic/d6/1f774e6a...b87a // derived from sha256("$/a/b/c")
-```
-
-#### `db.get(<path>)`
-
-```rust
-db.get("/a/b/c")
-```
-
-**prior state:** `salt == "$"`, `BlobBlock(/a/b/c)` exists.
-
-1. `sha256("$/a/b/c") -> d61f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a`
-2. convert hash to path on disk: `./cryptic/d6/1f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a`
-3. read file from disk: `let encrypted_blob = os.fs.read("./cryptic/d6/1f77...b87a")`
-4. decrypt: `let blob = decrypt(secret_key, encrypted_blob)`
-
-*Git repository is unchanged after call*
-
-#### `db.rm(<path>)`
-
-```rust
-db.rm("/a/b/c");
-```
-
-**prior state:** `salt == "$"`, `TreeBlock(/a/b)` exists.
-
-1. open`TreeBlock(/a/b)`: `let mut tree = db.tree_block("/a/b");
-2. remove `c` entry from  namespace: `ns.rm_entry("c");`
-3. `sha256("$/a/b/c") -> d61f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a`
-4. convert hash to path on disk: `./cryptic/d6/1f774e6a38d6d9031ab6ccf281c6275a8f835b73134afc2f626a97bde0b87a`
-5. delete the file
-
-Git repository state after call:
-
-```
-modified: ./cryptic/03/d4a92a45...7a4c // derived from sha256("$/a/b")
-deleted:  ./cryptic/d6/1f774e6a...b87a // derived from sha256("$/a/b/c")
-```
+An encrypted key salt (256 bits of random) is stored at the root of the Git repository `./key_salt`.
 
 ### Crypto
 
-#### Session
-
-The session stores all components necessary to perform crypto related actions.
-
-
-
 #### TAI: Safe Nonce Use
+
 - designate first 32 bits of nonce to site_id
 - per site 64 bit nonce stored in `./sites/<site_id>/NONCE`
 
@@ -220,67 +62,67 @@ Instead we use randomly generated 256bit salts as inputs to our kdf to give us u
 
 Why is this done? Protecting against nonces reuse in a distributed system is difficult, for instance if we use naive incrementing nonces, we could enter a situation where two sites both modify and re-encrypt the same block: both sites would increment the same nonce but they are encrypting (potentially) different plaintext, if we are not careful how we resolve this conflict we will expose the secret key.
 
-#### key files
+#### entropy files
 
-Key files random 256 bit keys  that are used to add additional entropy into the key derivation process. They are stored in plaintext on each site, but never leaves your device (in plaintext).
+Entropy files are random 256 bit keys  that are used to add additional entropy to the key derivation process. They are stored in plaintext on each device.
 
-The same key file must be present on each site to access your data.
+The same entropy file must be present on each site to access your data.
 
-##### Protocol for key_file Key Exchange
+##### Protocol for entropy_file Key Exchange
 
 New site makes clones the git repository
 
 **Case:** no entries in <root>/db/sites/
 Either this is the first site added to this gitdb instance or other site has not synchronized yet with the remote.
 
-In either case, generate a new key_file, key pair, store files at `<root>/key_file`, `<root>/db/sites/<site_id>/id.pub` and `<root>/id.priv` respectively.
+In either case, generate a new entropy_file, key pair, store files at `<root>/entropy_file`, `<root>/db/sites/<site_id>/id.pub` and `<root>/id.priv` respectively.
 
 Attempt to push
 
-If push fails, this means another site has created a key_file before you did, delete your key file and start over.
+If push fails, this means another site has created a entropy_file before you did, delete your entropy_file and start over.
 
 **Case:** there exists entries in `<root>/db/sites/*`
-In this case a key_file already exists
+In this case a entropy_file already exists
 
 generate a key pair, store files at `<root>/db/sites/<site_id>/id.pub` and `<root>/id.priv` and synchronize.
 
-periodically run `git pull` followed by checking if `<root>/db/sites/<site_id>/key_file.<existing_site_id>` exists.
+periodically run `git pull` followed by checking if `<root>/db/sites/<site_id>/entropy_file.<existing_site_id>` exists.
 
 *as an existing site*
 
 Sites are expected to periodically sync gitdb with remotes.
 
-on sync, sites detect newly added sites by scanning `<root>/db/sites/` for entries which are missing `<root>/db/sites/<some_site_id>/key_file.*`.
+on sync, sites detect newly added sites by scanning `<root>/db/sites/` for entries which are missing `<root>/db/sites/<some_site_id>/entropy_file.*`.
 
 Once a new site is detected, gitdb will prompt user for decision of whether they trust this new site. This is done through a callback passed to sync.
 
 On confirmation from user, this site will:
 1. generate an ephemeral key using the new site's public key
-2. encrypt the key_file using this ephemeral key
-3. write the encrypted key_file to `<root>/db/sites/<new_site_id>/key_file.<site_id>`
+2. encrypt the entropy_file using this ephemeral key
+3. write the encrypted entropy_file to `<root>/db/sites/<new_site_id>/entropy_file.<site_id>`
 
 And proceed with sync.
 
 *back to new site*
 
-on next `git pull`, we should have `<root>/db/sites/<site_id>/key_file.<existing_site_id>`
+on next `git pull`, we should have `<root>/db/sites/<site_id>/entropy_file.<existing_site_id>`
 
-Notify user which site gave us the key_file. Ask for confirmation that they trust this site.
+Notify user which site gave us the entropy_file. Ask for confirmation that they trust this site.
 
 On confirmation, read the file and decrypt:
 1. generate an ephemeral key using the new site's public key
-2. encrypt the key_file using this ephemeral key
-3. write the encrypted key_file to `<root>/db/sites/<new_site_id>/key_file.<site_id>`
+2. encrypt the entropy_file using this ephemeral key
+3. write the encrypted entropy_file to `<root>/db/sites/<new_site_id>/entropy_file.<site_id>`
 
-Despite user confirmation, authenticity of key_file must be verified by attempt to decrypt `<root>/db/path_salt`. An attacker with access to the remote may have created the `db/sites/<site_id>/key_file` maliciously, if we don't attempt to decrypt an encrypted file with this key_file, we risk making ourselves susceptible to bruteforce against the master passphrase.
+Despite user confirmation, authenticity of entropy_file must be verified by attempt to decrypt `<root>/db/path_salt`. An attacker with access to the remote may have created the `db/sites/<site_id>/entropy_file` maliciously, if we don't attempt to decrypt an encrypted file with this entropy_file, we risk making ourselves susceptible to bruteforce against the master passphrase.
 
-write plaintext key_file to `<root>/key_file`
+write plaintext entropy_file to `<root>/entropy_file`
 
 #### Key Derivation
 
 ###### key material
 
-**key_file:** random 256 bits stored in plaintext on each site, keep this hidden from any third party.
+**entropy_file:** random 256 bits stored in plaintext on each site, keep this hidden from any third party.
 
 **master_passphrase:** strong user chosen passphrase.
 
@@ -363,7 +205,7 @@ OUTPUT: plaintext
 
 
 
-## Automating Merge Conflicts with CRDT's
+## Automating Merge Conflicts
 
 GitDB is meant to be used in an offline first context, this necessarily means that conflicts are bound to happen and managing these conflicts in an unintruisive way is paramount to building useful applications on top of GitDB.
 
@@ -475,3 +317,8 @@ How to fix?
 2. NOT IDEAL: Wait until first sync before allowing writes, prompt user for verification that all site-id's are present before generating a random site-id and checking against existing sites.
 
 3. .... still thinking
+
+#### Prior Art
+
+- https://github.com/ff-notes/ff - a distributed notes app built with CRDT's + Git
+- 
