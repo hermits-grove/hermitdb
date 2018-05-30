@@ -23,6 +23,12 @@ pub struct DB {
     repo: Repository
 }
 
+#[derive(Serialize, Deserialize)]
+struct Entry {
+    key: String,
+    val: Vec<u8>
+}
+
 impl DB {
     pub fn init(root: &Path) -> Result<DB> {
         println!("initializing gitdb at {:?}", root);
@@ -101,6 +107,23 @@ impl DB {
         Ok(key_salt)
     }
 
+    pub fn create_salt(&self) -> Result<()> {
+        self.write_file(&Path::new("salt"), &rand_256()?)
+    }
+
+    pub fn salt(&self) -> Result<[u8; 256/8]>{
+        let bytes = self.read_file(&Path::new("salt"))?;
+        if bytes.len() != 256 / 8 {
+            return Err(Error::State("salt must be 256 bits".into()));
+        }
+        let mut salt = [0u8; 256/8];
+        for i in 0..(256/8) {
+            salt[i] = bytes[i];
+        }
+
+        Ok(salt)
+    }
+
     /// Each key/value pair maps to a single file on disk
     /// We preserve key confidentiality by mixing a key_salt with the key through a
     /// cryptographically secure hash, the key_salt must have enough entropy to
@@ -126,19 +149,22 @@ impl DB {
         Ok(PathBuf::from(dir_part).join(file_part))
     }
 
-    pub fn read_block(&self, key: &str, sess: &Session) -> Result<Block> {
-        let rel_path = Path::new("cryptic")
-            .join(&self.derive_key_filepath(&key, &sess)?);
-
-        println!("read_block {}\n\t@ {:?}", key, rel_path);
+    fn read_entry(&self, path: &Path, sess: &Session) -> Result<Entry> {
+        println!("read_entry {:?}", path);
         
-        let file_data = self.read_file(&rel_path)?;
-        let encrypted: Encrypted =
-            rmp_serde::from_slice(&file_data)?;
+        let data = self.read_file(&path)?;
+        let encrypted: Encrypted = rmp_serde::from_slice(&data)?;
 
         let plaintext = encrypted.decrypt(&sess)?;
+        let entry: Entry = rmp_serde::from_slice(&plaintext.0)?;
+        Ok(entry)
+    }
 
-        let block_reg: ditto::Register<Block> = rmp_serde::from_slice(&plaintext.0)?;
+    pub fn read_block(&self, key: &str, sess: &Session) -> Result<Block> {
+        let path = Path::new("cryptic")
+            .join(&self.derive_key_filepath(&key, &sess)?);
+        let entry = self.read_entry(&path, &sess)?;
+        let block_reg: ditto::Register<Block> = rmp_serde::from_slice(&entry.val)?;
         Ok(block_reg.get().to_owned())
     }
 
@@ -147,17 +173,15 @@ impl DB {
             return Err(Error::State("key must not be empty".into()));
         }
 
-        let rel_path = Path::new("cryptic")
+        let path = Path::new("cryptic")
             .join(self.derive_key_filepath(&key, &sess)?);
 
-        println!("write_block {}\n\t@ {:?}", key, rel_path);
+        println!("write_block {}\n\t@ {:?}", key, path);
 
-        let register = match self.read_file(&rel_path) {
-            Ok(data) => {
-                let encrypted: Encrypted = rmp_serde::from_slice(&data)?;
-                let plaintext = encrypted.decrypt(&sess)?;
-
-                let mut reg: ditto::Register<Block> = rmp_serde::from_slice(&plaintext.0)?;
+        let register = match self.read_entry(&path, &sess) {
+            Ok(entry) => {
+                let mut reg: ditto::Register<Block> =
+                    rmp_serde::from_slice(&entry.val)?;
 
                 // TODO: is there a better way than to clone here?
                 let mut old_block = reg
@@ -181,12 +205,17 @@ impl DB {
             Err(e) => return Err(e)
         };
 
-        let encrypted = Plaintext(rmp_serde::to_vec(&register)?)
+        let entry = Entry {
+            key: key.to_string(),
+            val: rmp_serde::to_vec(&register)?
+        };
+
+        let encrypted = Plaintext(rmp_serde::to_vec(&entry)?)
             .encrypt(&sess)?;
 
         let bytes = rmp_serde::to_vec(&encrypted)?;
-        self.write_file(&rel_path, &bytes)?;
-        git_helper::stage_file(&self.repo, &rel_path)?;
+        self.write_file(&path, &bytes)?;
+        git_helper::stage_file(&self.repo, &path)?;
         Ok(())
     }
 
@@ -199,6 +228,35 @@ impl DB {
             self.write_block(&key, &block, &sess)?;
         }
         Ok(())
+    }
+
+    pub fn prefix_scan(&self, prefix: &str, sess: &Session) -> Result<impl Iterator<Item=(String, Block)>> {
+        let mut matches: Vec<(String, Block)> = Vec::new();
+
+        // folder structure is:
+        // cryptic/xx/yyyy...yyyy
+        for outer_entry in std::fs::read_dir(self.root.join("cryptic"))? {
+            let outer_entry = outer_entry?;
+            let outer_path = outer_entry.path();
+            if !outer_path.is_dir() {
+                return Err(Error::State(format!("cryptic directory should only contain directories, found {:?}", outer_path)))
+            }
+            for inner_entry in std::fs::read_dir(&outer_path)? {
+                let inner_entry = inner_entry?;
+                let inner_path = inner_entry.path();
+                if !inner_path.is_file() {
+                    return Err(Error::State(format!("inner cryptic directory should only contain files, found {:?}", inner_path)))
+                }
+                let entry = self.read_entry(&inner_path, &sess)?;
+                if entry.key.starts_with(&prefix) {
+                    let reg: ditto::Register<Block> = rmp_serde::from_slice(&entry.val)?;
+                    matches.push((entry.key, reg.get().clone()));
+                }
+            }
+        }
+
+        matches.sort_by(|&(ref a, _), &(ref b, _)| a.cmp(&b));
+        Ok(matches.into_iter())
     }
 
     pub fn sync(&self, sess: &Session) -> Result<()> {
