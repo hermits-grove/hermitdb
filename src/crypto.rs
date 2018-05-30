@@ -1,329 +1,128 @@
+extern crate ring;
 extern crate ditto;
 
 use std;
-use std::io::{stdin, Read, Write, stdout};
+use std::io::{Read, Write};
 
-use ring::{aead, digest, pbkdf2};
-use ring::rand::{SecureRandom, SystemRandom};
+use self::ring::{aead, digest, pbkdf2};
+use self::ring::rand::{SecureRandom, SystemRandom};
 
-use error::Error;
+use error::{Error, Result};
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Config {
-    version: u8,
-    pbkdf2_iters: u32,
-    pbkdf2_salt: [u8; 256/8],
-    consumed: bool
+pub struct MasterKey([u8; 256 / 8]);
+
+pub struct KDF {
+    pub pbkdf2_iters: u32,
+    pub salt: [u8; 256 / 8],
+    pub entropy: [u8; 256 / 8]
+}
+
+impl KDF {
+    pub fn master_key(&self, pass: &[u8]) -> MasterKey {
+        let mut salt: Vec<u8> = Vec::with_capacity(512 / 8);
+        salt.extend_from_slice(&self.entropy);
+        salt.extend_from_slice(&self.salt);
+
+        let mut master_key = MasterKey([0u8; 256 / 8]);
+        pbkdf2::derive(
+            &digest::SHA256,
+            self.pbkdf2_iters,
+            &salt,
+            &pass,
+            &mut master_key.0
+        );
+        master_key
+    }
 }
 
 #[derive(Debug)]
 pub struct Session {
     pub site_id: ditto::dot::SiteId,
-    root: std::path::PathBuf,
-    key_file: Option<[u8; 256/8]>,
-    password: Option<Vec<u8>>
+    pub master_key: MasterKey
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Plaintext {
-    pub data: Vec<u8>,
-    pub config: Config
-}
+pub struct Plaintext(pub Vec<u8>);
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Encrypted{
+    pub nonce: [u8; 96/8],
     pub ciphertext: Vec<u8>,
-    pub config: Config
-}
-
-impl Session {
-    pub fn new(root: &std::path::Path, site_id: ditto::dot::SiteId) -> Session {
-        Session {
-            site_id: site_id,
-            root: root.to_path_buf(),
-            key_file: None,
-            password: None
-        }
-    }
-
-    pub fn create_key_file(&mut self) -> Result<(), Error> {
-        let key_file_path = self.root.join("key_file");
-        if key_file_path.is_file() {
-            return Err(Error::State("Attempting to create a key_file when one exists".into()));
-        }
-
-        assert!(self.key_file.is_none());
-
-        let key_file = gen_rand_256()?;
-        let mut f = std::fs::File::create(key_file_path)?;
-        f.write_all(&key_file)?;
-
-        self.key_file = Some(key_file);
-        Ok(())
-    }
-
-    pub fn set_pass(&mut self, pass: &[u8]) {
-        self.password = Some(pass.to_vec());
-    }
-
-    pub fn key_file(&mut self) -> Result<[u8; 256/8], Error> {
-        if let Some(ref key_file) = self.key_file {
-            Ok(key_file.clone())
-        } else {
-            let key_file_path = self.root.join("key_file");
-            if !key_file_path.is_file() {
-                return Err(Error::State("Attempting to read key_file when one does not exist".into()));
-            }
-            
-            let mut f = std::fs::File::open(&key_file_path)?;
-
-            assert_eq!(std::fs::metadata(&key_file_path)?.len(), 256/8);
-
-            let mut key_file = [0u8; 256/8];
-            f.read_exact(&mut key_file)?;
-            self.key_file = Some(key_file.clone());
-            Ok(key_file)
-        }
-    }
-
-    pub fn pass(&mut self) -> Result<Vec<u8>, Error> {
-        if let Some(ref pass) = self.password {
-            Ok(pass.clone())
-        } else {
-            let pass = read_stdin("master passphrase")?;
-            let pass_bytes = pass.as_bytes().to_vec();
-            self.password = Some(pass_bytes.clone());
-            Ok(pass_bytes)
-        }
-    }
-}
-
-impl Config {
-    pub fn fresh_default() -> Result<Config, Error> {
-        let salt = gen_rand_256()?;
-
-        Ok(Config {
-            version: 0,
-            pbkdf2_iters: 1,
-            pbkdf2_salt: salt,
-            consumed: false
-        })
-    }
-
-    pub fn serialized_byte_count() -> usize {
-        1 + 32 / 8 + 256 / 8 // version + pbkdf2 iters + pbkdf2 salt
-    }
-
-    /// Parses a config from some bytes
-    ///
-    /// Reads just enough of the prefix of the given bytes to parse a `Config`
-    /// does not look past what's required to parse a valid `Config`
-    ///
-    /// format: [ version (1 byte) | iters (4 bytes) | salt (256 / 8 = 32 bytes) ]
-    pub fn from_bytes(bytes: &[u8]) -> Result<Config, Error> {
-        if bytes.len() == 0 {
-            return Err(Error::Parse("Nothing to parse (bytes.len() == 0)".into()));
-        }
-
-        let version = bytes[0];
-
-        match version {
-            0 => {
-                let expected_bytes = Config::serialized_byte_count();
-                if bytes.len() < expected_bytes {
-                    Err(Error::Parse(format!("Not enough bytes to parse config: {} < {}", bytes.len(), expected_bytes)))
-                } else {
-                    let iters = bytes_to_u32(&[bytes[1], bytes[2], bytes[3], bytes[4]]);
-                    let mut salt = [0u8; 256/8];
-                    salt.copy_from_slice(&bytes[(1+4)..(1+4+(256/8))]);
-                    Ok(Config {
-                        version: 0,
-                        pbkdf2_iters: iters,
-                        pbkdf2_salt: salt,
-                        consumed: true
-                    })
-                }
-            },
-            _ => Err(Error::Version(format!("Unknown Config version: {}", version)))
-        }
-    }
-
-    /// Serializes config to bytes
-    /// - only config data needed for decryption is serialized
-    ///
-    /// format: [ version (1 byte) | iters (4 bytes) | salt (256 / 8 = 32 bytes) ]
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let byte_count = Config::serialized_byte_count();
-        let mut bytes: Vec<u8> = Vec::with_capacity(byte_count);
-        bytes.push(self.version);
-        bytes.extend(u32_to_bytes(self.pbkdf2_iters).iter());
-        bytes.extend(self.pbkdf2_salt.iter());
-        
-        assert_eq!(bytes.capacity(), byte_count); // allocation sanity check
-
-        bytes
-    }
 }
 
 impl Plaintext {
-    pub fn encrypt(&mut self, sess: &mut Session) -> Result<Encrypted, Error> {
+    pub fn encrypt(&mut self, sess: &Session) -> Result<Encrypted> {
         // TAI: compress before encrypt
+        let aead_algo = &aead::CHACHA20_POLY1305;
+        let seal_key = aead::SealingKey::new(aead_algo, &sess.master_key.0)
+            .map_err(|_| Error::Crypto("Failed to generate a sealing key".into()))?;
 
-        if self.config.consumed {
-            return Err(Error::Crypto("Attempted to encrypt with an already consumed config".into()));
-        }
 
-        assert_eq!(self.config.consumed, false);
-        let ciphertext = encrypt(&sess.pass()?, &sess.key_file()?, &self.data, &mut self.config)?;
-        assert_eq!(self.config.consumed, true);
-        
-        let encrypted = Encrypted {
-            ciphertext: ciphertext.to_vec(),
-            config: self.config.clone()
+        let mut cryptic = Encrypted {
+            nonce: rand_96()?,
+            ciphertext: Vec::with_capacity(self.0.len() + aead_algo.tag_len())
         };
-        Ok(encrypted)
+        
+        cryptic.ciphertext.extend(&self.0);
+        cryptic.ciphertext.extend(vec![0u8; aead_algo.tag_len()]);
+
+        aead::seal_in_place(
+            &seal_key,               // key
+            &cryptic.nonce,          // nonce
+            &cryptic.nonce,          // ad
+            &mut cryptic.ciphertext, // plaintext
+            seal_key.algorithm().tag_len()
+        ).map_err(|_| Error::Crypto("Failed to encrypt with AEAD".into()))?;
+
+        Ok(cryptic)
     }
 }
 
 impl Encrypted {
+    pub fn decrypt(&self, sess: &Session) -> Result<Plaintext> {
+        let aead_algo = &aead::CHACHA20_POLY1305;
+        let opening_key = aead::OpeningKey::new(aead_algo, &sess.master_key.0)
+            .map_err(|_| Error::Crypto("Failed to create key when decrypting".into()))?;
 
-    pub fn from_bytes(bytes: &[u8]) -> Result<Encrypted, Error> {
-        let config = Config::from_bytes(&bytes[0..Config::serialized_byte_count()])?;
-        let data = &bytes[Config::serialized_byte_count()..];
+        let mut in_out = Vec::with_capacity(self.ciphertext.len());
+        in_out.extend_from_slice(&self.ciphertext);
 
-        Ok(Encrypted {
-            ciphertext: data.to_vec(),
-            config: config
-        })
-    }
-    
-    pub fn read(file_path: &std::path::Path) -> Result<Encrypted, Error> {
-        let mut f = std::fs::File::open(file_path)?;
-        
-        let mut config_bytes = vec![0u8; Config::serialized_byte_count()];
-        f.read_exact(&mut config_bytes)?;
-        let config = Config::from_bytes(&config_bytes)?;
+        let plain = aead::open_in_place(
+            &opening_key,
+            &self.nonce,
+            &self.nonce,
+            0,
+            &mut in_out
+        ).map_err(|_| Error::Crypto("Failed to decrypt".into()))?;
 
-        let mut data = Vec::new();
-        f.read_to_end(&mut data)?;
-
-        Ok(Encrypted {
-            ciphertext: data,
-            config: config
-        })
-    }
-
-    pub fn write(&self, file_path: &std::path::Path) -> Result<(), Error> {
-        match file_path.parent() {    
-            Some(parent_path) =>
-                std::fs::create_dir_all(&parent_path),
-            None => Ok(()) // no parent to create
-        }?;
-
-        // File::create will replace existing files
-        let mut f = std::fs::File::create(file_path)?;
-
-        f.write_all(&self.config.to_bytes())
-            .or_else(|e| {
-                std::fs::remove_file(file_path)?;
-                Err(Error::IO(e))
-            })?;
-        
-        f.write_all(&self.ciphertext)
-            .or_else(|e| {
-                std::fs::remove_file(file_path)?;
-                Err(Error::IO(e))
-            })?;
-        Ok(())
-    }
-
-    pub fn decrypt(&self, sess: &mut Session) -> Result<Plaintext, Error> {
-        println!("decrypting....");
-        let plaintext_data = decrypt(
-            &sess.pass()?,
-            &sess.key_file()?,
-            &self.ciphertext,
-            &self.config
-        )?;
-
-        let plaintext = Plaintext {
-            data: plaintext_data.to_vec(),
-            config: self.config.clone()
-        };
-        
-        println!("decrypted!");
-        Ok(plaintext)
+        Ok(Plaintext(plain.to_vec()))
     }
 }
 
-/// Generate a 256 bit key derived through PBKDF2_SHA256
-pub fn pbkdf2(pass: &[u8], config: &Config) -> Result<[u8; 256 / 8], Error> {
-    if config.version != 0 {
-        return Err(Error::Version(format!("Config version {} not supported", config.version)));
+/// Will return Err if entropy_file does not exist
+pub fn read_entropy_file(root: &std::path::Path) -> Result<[u8; 256/8]> {
+    let entropy_filepath = root.join("entropy_file");
+    let mut f = std::fs::File::open(&entropy_filepath)?;
+    if std::fs::metadata(&entropy_filepath)?.len() != 256/8 {
+        return Err(Error::State("entropy_file must contain exactly 256 bits".into()));
     }
-
-    let pbkdf2_algo = &digest::SHA256;
-    let mut key = [0u8; 256 / 8];
-    pbkdf2::derive(pbkdf2_algo, config.pbkdf2_iters, &config.pbkdf2_salt, &pass, &mut key);
-    Ok(key)
+    let mut entropy_file = [0u8; 256/8];
+    f.read_exact(&mut entropy_file)?;
+    Ok(entropy_file)
 }
 
-pub fn encrypt(pass: &[u8], key_file: &[u8; 256/8], data: &[u8], config: &mut Config) -> Result<Vec<u8>, Error> {
-    // TAI: short ciphertexts may give away useful length information to an attacker, consider padding plaintext before encrypting
-
-    if config.version != 0 {
-        return Err(Error::Version(format!("Config version {} not supported", config.version)));
+/// Will return Err if entropy_file exists
+pub fn create_entropy_file(root: &std::path::Path) -> Result<[u8; 256/8]> {
+    let entropy_filepath = root.join("entropy_file");
+    if entropy_filepath.is_file() {
+        return Err(Error::State("Attempting to create an entropy_file when one exists".into()));
     }
 
-    if config.consumed {
-        return Err(Error::Crypto("ATTEMPTING TO ENCRYPT WITH A SALT WHICH HAS ALREADY BEEN CONSUMED".into()));
-    }
-
-    config.consumed = true;
-
-    let aead_algo = &aead::CHACHA20_POLY1305;
-    
-    let mut key: [u8; 256/8] = pbkdf2(pass, &config)?;
-    for i in 0..key.len() {
-        key[i] = key[i] ^ key_file[i];
-    }
-
-    let seal_key = aead::SealingKey::new(aead_algo, &key)
-        .map_err(|_| Error::Crypto("Failed to generate a sealing key".into()))?;
-
-    let mut in_out = Vec::with_capacity(data.len() + seal_key.algorithm().tag_len());
-    in_out.extend(data.iter());
-    in_out.extend(vec![0u8; seal_key.algorithm().tag_len()]);
-    let ad = config.to_bytes();
-    let nonce = [0u8; 96 / 8]; // see crypto design doc (we never encrypt with the same key twice)
-
-    aead::seal_in_place(&seal_key, &nonce, &ad, &mut in_out, seal_key.algorithm().tag_len())
-        .map_err(|_| Error::Crypto("Failed to encrypt with AEAD".into()))?;
-
-    Ok(in_out)
-}
-
-pub fn decrypt(pass: &[u8], key_file: &[u8; 256/8], ciphertext: &[u8], config: &Config) -> Result<Vec<u8>, Error> {
-    assert!(config.consumed);
-    let aead_algo = &aead::CHACHA20_POLY1305;
-    let mut key: [u8; 256/8] = pbkdf2(pass, &config)?;
-    for i in 0..key.len() {
-        key[i] = key[i] ^ key_file[i];
-    }
-    
-    let opening_key = aead::OpeningKey::new(aead_algo, &key)
-        .map_err(|_| Error::Crypto("Failed to create key when decrypting".into()))?;
-
-    let mut in_out = Vec::new();
-    in_out.extend(ciphertext.iter());
-
-    let ad = config.to_bytes();
-    let nonce = [0u8; 96 / 8]; // see crypto design doc (we never encrypt with the same key twice)
-
-    let plaintext = aead::open_in_place(&opening_key, &nonce, &ad, 0, &mut in_out)
-        .map_err(|_| Error::Crypto("Failed to decrypt".into()))?;
-
-    Ok(plaintext.to_vec())
+    let mut f = std::fs::File::create(entropy_filepath)?;
+    let entropy = rand_256()?;
+    f.write_all(&entropy)?;
+    Ok(entropy)
 }
 
 pub fn u32_to_bytes(i: u32) -> [u8; 4] {
@@ -345,31 +144,16 @@ pub fn bytes_to_u32(xs: &[u8; 4]) -> u32 {
         | (xs[3] as u32)
 }
 
-pub fn read_stdin(prompt: &str) -> Result<String, Error> {
-    // TODO: for unix systems, do something like this: https://stackoverflow.com/a/37416107
-
-    print!("{}: ", prompt);
-    stdout().flush().ok();
-    let mut pass = String::with_capacity(16);
-    stdin().read_line(&mut pass)
-        .map_err(Error::IO)?;
-    pass.trim();
-    Ok(pass)
-}
-
-pub fn gen_rand(bytes: usize) -> Result<Vec<u8>, Error> {
-    let mut buf = vec![0u8; bytes];
+pub fn rand_96() -> Result<[u8; 96/8]> {
+    let mut buf = [0u8; 96/8];
     // TAI: Should this rng live in a session so we don't have to recreate it each time?
     SystemRandom::new()
         .fill(&mut buf)
-        .map_err(|_| Error::Crypto("Failed to generate random pbkdf2 salt".into()))?;
+        .map_err(|_| Error::Crypto("Failed to generate 96 bits of random".into()))?;
     Ok(buf)
 }
 
-// It's quite common to need 256 bits of crypto grade random.
-//
-// Having a fixed size array here gives us some compile time guarantees.
-pub fn gen_rand_256() -> Result<[u8; 256/8], Error> {
+pub fn rand_256() -> Result<[u8; 256/8]> {
     let mut buf = [0u8; 256/8];
     // TAI: Should this rng live in a session so we don't have to recreate it each time?
     SystemRandom::new()
@@ -382,141 +166,75 @@ pub fn gen_rand_256() -> Result<[u8; 256/8], Error> {
 mod test {
     extern crate tempfile;
     use super::*;
-    
-    #[test]
-    fn fresh_config_is_not_consumed() {
-        let conf = Config::fresh_default().unwrap();
-        assert_eq!(conf.consumed, false);
-    }
 
     #[test]
-    fn config_is_same_but_consumed_after_converted_to_bytes() {
-        let conf1 = Config::fresh_default().unwrap();
-        let conf2 = Config::from_bytes(&conf1.to_bytes()).unwrap();
-        assert_eq!(conf1.consumed, false);
-        assert_eq!(conf2.consumed, true);
-        assert_eq!(conf1.version, conf2.version);
-        assert_eq!(conf1.pbkdf2_iters, conf2.pbkdf2_iters);
-        assert_eq!(conf1.pbkdf2_salt, conf2.pbkdf2_salt);
-    }
-
-    #[test]
-    fn config_fails_to_deserialize_bad_version() {
-        let mut conf = Config::fresh_default().unwrap();
-        conf.version = 183;
-        match Config::from_bytes(&conf.to_bytes()).unwrap_err() {
-            Error::Version(_) => ":)",
-            _ => panic!("should have err'd with a version error")
-        };
-    }
-
-    #[test]
-    fn config_fails_to_deserialize_bad_bytes() {
-        match Config::from_bytes(&[0]).unwrap_err() {
-            Error::Parse(_) => ":)",
-            _ => panic!("should have err'd with a parse error")
-        };
-    }
-
-    #[test]
-    fn session() {
+    fn entropy_file() {
         let dir = tempfile::tempdir().unwrap();
-        let mut sess = Session::new(&dir.path(), 0);
+        let dir_path = dir.path().to_owned();
+        let read1 = read_entropy_file(&dir_path);
+        assert!(read1.is_err());
 
-        assert_eq!(sess.root, dir.path());
-        assert!(sess.password.is_none());
-        assert!(sess.key_file.is_none());
+        let create1 = create_entropy_file(&dir_path);
+        assert!(create1.is_ok());
+        let entropy1 = create1.unwrap();
+        
+        let create2 = create_entropy_file(&dir_path);
+        assert!(create2.is_err());
 
-        sess.create_key_file().unwrap();
+        assert_eq!(entropy1.len(), 256/8);
 
-        let key_file_path = dir.path().join("key_file");
-        assert!(key_file_path.is_file());
-        assert_eq!(std::fs::metadata(&key_file_path).unwrap().len(), 256/8);
+        let read2 = read_entropy_file(&dir_path);
+        assert!(read2.is_ok());
 
-        let mut key_file_data = [0u8; 256/8];
-        let mut f = std::fs::File::open(&key_file_path).unwrap();
-        f.read_exact(&mut key_file_data).unwrap();
+        let entropy2 = read2.unwrap();
+        assert_eq!(entropy1, entropy2);
+    }
 
-        assert_eq!(sess.key_file().unwrap(), key_file_data);
+    #[test]
+    fn kdf() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = dir.path().to_owned();
+        let kdf = KDF {
+            pbkdf2_iters: 1000,
+            salt: rand_256().unwrap(),
+            entropy: create_entropy_file(&dir_path).unwrap()
+        };
 
-        let mut new_sess = Session::new(&dir.path(), 0);
-        assert_eq!(sess.key_file().unwrap(), new_sess.key_file().unwrap());
-
-        assert!(sess.password.is_none());
-        sess.set_pass("this is between you and me".as_bytes());
-        assert_eq!(std::str::from_utf8(&sess.pass().unwrap()).unwrap(), "this is between you and me");
+        let master_key1 = kdf.master_key("sssshh.. it's a secret".as_bytes());
+        let master_key2 = kdf.master_key("sssshh.. it's a secret".as_bytes());
+        let master_key3 = kdf.master_key("imposter!!".as_bytes());
+        
+        assert_eq!(master_key1, master_key2);
+        assert_ne!(master_key1, master_key3);
     }
 
     #[test]
     fn plaintext_encrypt_decrypt() {
-        let msg = "I kinda like you";
-        let mut plain = Plaintext {
-            data: msg.as_bytes().to_vec(),
-            config: Config::fresh_default().unwrap()
-        };
-        let mut sess = Session {
-            site_id: 0,
-            root: tempfile::tempdir().unwrap().path().to_path_buf(),
-            key_file: Some(gen_rand_256().unwrap()),
-            password: Some(gen_rand(12).unwrap())
-        };
-
-        let encrypted = plain.encrypt(&mut sess).unwrap();
-        assert_eq!(plain.config.consumed, true);
-        assert_eq!(plain.config.version, encrypted.config.version);
-        assert_eq!(plain.config.pbkdf2_iters, encrypted.config.pbkdf2_iters);
-        assert_eq!(plain.config.pbkdf2_salt, encrypted.config.pbkdf2_salt);
-        
-        match plain.encrypt(&mut sess).unwrap_err() {
-            Error::Crypto(_) => ":)",
-            _ => panic!("Encrypting with a consumed config should fail!")
-        };
-
-        let plain2 = encrypted.decrypt(&mut sess).unwrap();
-        assert_eq!(plain2.config.consumed, true);
-        assert_eq!(plain.config.version, plain2.config.version);
-        assert_eq!(plain.config.pbkdf2_iters, plain2.config.pbkdf2_iters);
-        assert_eq!(plain.config.pbkdf2_salt, plain2.config.pbkdf2_salt);
-
-        let decrypted_string = String::from_utf8(plain2.data).unwrap();
-        assert_eq!(decrypted_string, "I kinda like you");
-    }
-
-    #[test]
-    fn encrypt_decrypt_file_io() {
         let dir = tempfile::tempdir().unwrap();
-        let file_path = dir.path().join("secret_note.txt");
-        let msg = "she's becoming a peaceful one";
-
-        let mut plain = Plaintext {
-            data: msg.as_bytes().to_vec(),
-            config: Config::fresh_default().unwrap()
+        let dir_path = dir.path().to_owned();
+        
+        let kdf = KDF {
+            pbkdf2_iters: 1000,
+            salt: rand_256().unwrap(),
+            entropy: create_entropy_file(&dir_path).unwrap()
         };
 
-        let mut sess = Session {
+        let sess = Session {
             site_id: 0,
-            root: tempfile::tempdir().unwrap().path().to_path_buf(),
-            key_file: Some(gen_rand_256().unwrap()),
-            password: Some(gen_rand(12).unwrap())
+            master_key: kdf.master_key("do you KNOW who I am??".as_bytes())
         };
 
-        let encrypted = plain.encrypt(&mut sess)
-            .unwrap();
+        let mut plain = Plaintext("I kinda like you".as_bytes().to_vec());
+        let encrypted = plain.encrypt(&sess).unwrap();
+        assert_ne!(encrypted.ciphertext, plain.0);
         
-        encrypted.write(&file_path).unwrap();
+        let encrypted2 = plain.encrypt(&sess).unwrap();
+        assert_ne!(encrypted.nonce, encrypted2.nonce);
+        assert_ne!(encrypted.ciphertext, encrypted2.ciphertext);
 
-        let encrypted2 = Encrypted::read(&file_path)
-            .unwrap();
-        assert_eq!(encrypted, encrypted2);
-        
-        let plain2 = encrypted2
-            .decrypt(&mut sess)
-            .unwrap();
-        
-        assert_eq!(plain, plain2);
-        
-        let decrypted_string = String::from_utf8(plain2.data).unwrap();
-        assert_eq!(decrypted_string, "she's becoming a peaceful one");
+        let plain2 = encrypted.decrypt(&sess).unwrap();
+        let decrypted_string = String::from_utf8(plain2.0).unwrap();
+        assert_eq!(decrypted_string, "I kinda like you");
     }
 
     #[test]
