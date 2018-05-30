@@ -2,7 +2,7 @@
 name = "gitdb"
 version = "0.1.1"
 authors = ["David Rusu <davidrusu@protonmail.com>"]
-description = "encrypted database built on top of git"
+description = "A security concious database for apps that respect user privacy"
 license="GPL-2.0"
 
 [dependencies]

@@ -54,31 +54,31 @@ impl Blockable for Remote {
 }
 
 impl Remote {
-    pub fn from_db(prefix: &str, db: &DB, mut sess: &mut Session) -> Result<Self> {
-        let res = Remote::noauth_from_db(&prefix, &db, &mut sess);
+    pub fn from_db(prefix: &str, db: &DB, sess: &Session) -> Result<Self> {
+        let res = Remote::noauth_from_db(&prefix, &db, &sess);
         if let Ok(remote) = res {
             Ok(remote)
         } else {
-            Remote::userpass_from_db(&prefix, &db, &mut sess)
+            Remote::userpass_from_db(&prefix, &db, &sess)
         }   
     }
 
-    fn userpass_from_db(prefix: &str, db: &DB, mut sess: &mut Session) -> Result<Self> {
+    fn userpass_from_db(prefix: &str, db: &DB, sess: &Session) -> Result<Self> {
         let pre = format!("{}#userpassauth$", prefix);
 
-        let name = db.read_block(&format!("{}name", pre), &mut sess)?.to_val()?;
-        let url = db.read_block(&format!("{}url", pre), &mut sess)?.to_val()?;
-        let username = db.read_block(&format!("{}username", pre), &mut sess)?.to_val()?;
-        let password = db.read_block(&format!("{}password", pre), &mut sess)?.to_val()?;
+        let name = db.read_block(&format!("{}name", pre), &sess)?.to_val()?;
+        let url = db.read_block(&format!("{}url", pre), &sess)?.to_val()?;
+        let username = db.read_block(&format!("{}username", pre), &sess)?.to_val()?;
+        let password = db.read_block(&format!("{}password", pre), &sess)?.to_val()?;
 
         Ok(Remote::UserPassAuth { name, url, username, password })
     }
 
-    fn noauth_from_db(prefix: &str, db: &DB, mut sess: &mut Session) -> Result<Self> {
+    fn noauth_from_db(prefix: &str, db: &DB, sess: &Session) -> Result<Self> {
         let pre = format!("{}#noauth$", prefix);
 
-        let name =  db.read_block(&format!("{}name", pre), &mut sess)?.to_val()?;
-        let url = db.read_block(&format!("{}url", pre), &mut sess)?.to_val()?;
+        let name =  db.read_block(&format!("{}name", pre), &sess)?.to_val()?;
+        let url = db.read_block(&format!("{}url", pre), &sess)?.to_val()?;
 
         Ok(Remote::NoAuth { name, url })
     }
