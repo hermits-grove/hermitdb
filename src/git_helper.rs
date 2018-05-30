@@ -1,4 +1,3 @@
-// TODO: rename KEY_FILE to ENTROPY_FILE
 extern crate time;
 extern crate git2;
 extern crate rmp_serde;
