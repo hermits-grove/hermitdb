@@ -30,10 +30,8 @@ struct Entry {
 }
 
 impl DB {
-    pub fn init(root: &Path) -> Result<DB> {
-        println!("initializing gitdb at {:?}", root);
-        let repo = Repository::open(&root)
-            .or_else(|_| Repository::init(&root))?;
+    pub fn open(root: &Path) -> Result<DB> {
+        let repo = Repository::open(&root)?;
 
         let db = DB {
             root: root.to_path_buf(),
@@ -41,6 +39,12 @@ impl DB {
         };
 
         Ok(db)
+
+    }
+    pub fn init(root: &Path) -> Result<DB> {
+        println!("initializing gitdb at {:?}", root);
+        Repository::init(&root)?;
+        DB::open(&root)
     }
 
     pub fn init_from_remote(root: &Path, remote: &Remote) -> Result<DB> {
@@ -48,7 +52,7 @@ impl DB {
         let empty_repo = Repository::init(&root)?;
         git_helper::sync(&empty_repo, &remote, &mut |_, _| false)?;
 
-        DB::init(&root)
+        DB::open(&root)
     }
 
     pub fn read_file(&self, rel_path: &Path) -> Result<Vec<u8>> {
