@@ -2,13 +2,15 @@
 
 ###### A privacy concious database for apps that respect user privacy 
 
+
+
 #### Should you use gitdb?
 
-Gitdb is not fast and it's features and tooling are bare bones, but... it may be just enough.
+Gitdb is not fast and it's features and tooling are bare bones, but... it may be enough for most apps.
 
-Gitdb's goals is to be a fast-enough, offline-first, distributed key-value store with strong confidentiality and support for automated conflict resolution.
+Gitdb's goals is to be a fast-enough, offline-first, distributed key-value store with strong privacy and support for automated conflict resolution.
 
-Applications built using gitdb tap into a large federated network for storing data: Git is a widely deployed and well understood protocol, technical users have a wide selection of storage options to choose from, they may pay Github, Gitlab, Bitbucket, etc.. or even host their own Git server. 
+Applications built using GitDB tap into a large federated network for storing data: Git is a widely deployed and well understood protocol, users have a wide selection of storage options to choose from. They may pay Github, Gitlab, Bitbucket, etc.. or even host their own. 
 
 The original motivator for gitdb was *mona,* a password manager which relied on Git to manage state across devices (*[the project is in development here.](https://github.com/the-gitdb-cooperative/mona)*)
 
