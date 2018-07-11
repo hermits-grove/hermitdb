@@ -1,5 +1,4 @@
 extern crate ring;
-extern crate ditto;
 
 use std;
 use std::io::{Read, Write};
@@ -38,7 +37,7 @@ impl KDF {
 
 #[derive(Debug)]
 pub struct Session {
-    pub site_id: ditto::dot::SiteId,
+    pub actor: u128,
     pub master_key: MasterKey
 }
 
@@ -220,7 +219,7 @@ mod test {
         };
 
         let sess = Session {
-            site_id: 0,
+            actor: 0,
             master_key: kdf.master_key("do you KNOW who I am??".as_bytes())
         };
 

@@ -1,26 +1,22 @@
-extern crate ditto;
+extern crate crdts;
 
 use std;
 
 use error::{Result, Error};
 
-pub trait Blockable {
-    fn blocks(&self) -> Vec<(String, Block)>;
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub enum Prim {
+    Bool(bool),
     U64(u64),
     F64(f64),
     Str(String),
     Bytes(Vec<u8>)
 }
 
-impl Eq for Prim {}
-
 impl std::hash::Hash for Prim {
     fn hash<H: std::hash::Hasher>(&self, mut state: &mut H) {
-        match self {   
+        match self {
+            Prim::Bool(v) => v.hash(&mut state),
             Prim::U64(v) => v.hash(&mut state),
             Prim::F64(v) => v.to_bits().hash(&mut state),
             Prim::Str(v) => v.hash(&mut state),
@@ -31,101 +27,101 @@ impl std::hash::Hash for Prim {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Block {
-    Val(ditto::Register<Prim>),
-    Set(ditto::Set<Prim>),
-    Map(ditto::Map<Prim, Prim>),
-    List(ditto::List<Prim>)
+    // TAI: should the (i64, i32) timestamp be (u64, u32) ??
+    VClock(crdts::VClock<u128>),
+    Reg(crdts::LWWReg<Prim, ((i64, i32), u128)>),
+    Map(crdts::Map<Vec<u8>, Block, u128>)
 }
 
-impl Blockable for Block {
-    fn blocks(&self) -> Vec<(String, Block)> {
-        vec![(String::new(), self.clone())]
+impl crdts::ComposableCrdt<u128> for Block {
+    fn truncate(&mut self, clock: crdts::VClock<u128>) {
+        match self {
+            Block::VClock(current_clock) =>
+                current_clock.truncate(&clock),
+            Block::Reg(lwwreg) =>
+                lwwreg.truncate(clock),
+            Block::Map(map) =>
+                map.truncate(clock)
+        }
+    }
+    
+    fn merge(&mut self, other: &Self) -> crdts::Result<()> {
+        match (self, other) {
+            (Block::VClock(x), Block::VClock(y)) =>
+                Ok(x.merge(&y)),
+            (Block::Reg(x), Block::Reg(y)) =>
+                crdts::ComposableCrdt::<()>::merge(x, &y),
+            (Block::Map(x), Block::Map(y)) =>
+                x.merge(&y),
+            (_, _) =>
+                Err(crdts::Error::MergeConflict)
+        }
     }
 }
 
 impl Block {
-    pub fn merge(&mut self, other: &Self) -> Result<()> {
-        match (self, other) {
-            (Block::Val(x), Block::Val(y)) => Ok(x.merge(&y)),
-            (Block::Set(x), Block::Set(y)) => Ok(x.merge(&y)),
-            (Block::Map(x), Block::Map(y)) => Ok(x.merge(&y)),
-            (Block::List(x), Block::List(y)) => Ok(x.merge(&y)),
-            (_, _) => Err(Error::BlockTypeConflict)
+    pub fn to_vclock(&self) -> Result<crdts::VClock<u128>> {
+        match self {
+            Block::VClock(v) => Ok(v.clone()),
+            _ => Err(Error::State("Expected VClock".into()))
         }
     }
 
-    pub fn to_val(&self) -> Result<ditto::Register<Prim>> {
+    pub fn to_reg(&self) -> Result<crdts::LWWReg<Prim, ((i64, i32), u128)>> {
         match self {
-            Block::Val(v) => Ok(v.clone()),
-            Block::Set(_) => Err(Error::State("Expected Val got Set".into())),
-            Block::Map(_) => Err(Error::State("Expected Val got Map".into())),
-            Block::List(_) => Err(Error::State("Expected Val got List".into()))
+            Block::Reg(v) => Ok(v.clone()),
+            _ => Err(Error::State("Expected Reg".into()))
         }
     }
 
-    pub fn to_set(&self) -> Result<ditto::Set<Prim>> {
+    pub fn to_map(&self) -> Result<crdts::Map<Vec<u8>, Block, u128>> {
         match self {
-            Block::Val(_) => Err(Error::State("Expected Set got Val".into())),
-            Block::Set(s) => Ok(s.clone()),
-            Block::Map(_) => Err(Error::State("Expected Set got Map".into())),
-            Block::List(_) => Err(Error::State("Expected Set got List".into()))
-        }
-    }
-
-    pub fn to_map(&self) -> Result<ditto::Map<Prim, Prim>> {
-        match self {
-            Block::Val(_) => Err(Error::State("Expected Map got Val".into())),
-            Block::Set(_) => Err(Error::State("Expected Map got Set".into())),
             Block::Map(m) => Ok(m.clone()),
-            Block::List(_) => Err(Error::State("Expected Map got List".into()))
-        }
-    }
-
-    pub fn to_list(&self) -> Result<ditto::List<Prim>> {
-        match self {
-            Block::Val(_) => Err(Error::State("Expected List got Val".into())),
-            Block::Set(_) => Err(Error::State("Expected List got Set".into())),
-            Block::Map(_) => Err(Error::State("Expected List got Map".into())),
-            Block::List(l) => Ok(l.clone())
+            _ => Err(Error::State("Expected Map".into()))
         }
     }
 }
 
 impl Prim {
+    pub fn to_bool(&self) -> Result<bool>{
+        match self {
+            Prim::Bool(v) => Ok(*v),
+            _ => Err(Error::State("Expected Bool".into()))
+        }
+    }
+
     pub fn to_u64(&self) -> Result<u64>{
         match self {
             Prim::U64(v) => Ok(*v),
-            Prim::F64(_) => Err(Error::State("Expected U64 got F64".into())),
-            Prim::Str(_) => Err(Error::State("Expected U64 got Str".into())),
-            Prim::Bytes(_) => Err(Error::State("Expected U64 got Bytes".into()))
+            _ => Err(Error::State("Expected U64".into()))
         }
     }
 
     pub fn to_f64(&self) -> Result<f64>{
         match self {
-            Prim::U64(_) => Err(Error::State("Expected F64 got U64".into())),
             Prim::F64(v) => Ok(*v),
-            Prim::Str(_) => Err(Error::State("Expected F64 got Str".into())),
-            Prim::Bytes(_) => Err(Error::State("Expected F64 got Bytes".into()))
+            _ => Err(Error::State("Expected F64".into()))
         }
     }
 
     pub fn to_string(&self) -> Result<String>{
         match self {
-            Prim::U64(_) => Err(Error::State("Expected Str got U64".into())),
-            Prim::F64(_) => Err(Error::State("Expected Str got F64".into())),
             Prim::Str(v) => Ok(v.clone()),
-            Prim::Bytes(_) => Err(Error::State("Expected Str got Bytes".into()))
+            _ => Err(Error::State("Expected Str".into()))
         }
     }
 
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         match self {
-            Prim::U64(_) => Err(Error::State("Expected Bytes got U64".into())),
-            Prim::F64(_) => Err(Error::State("Expected Bytes got F64".into())),
-            Prim::Str(_) => Err(Error::State("Expected Bytes got Str".into())),
-            Prim::Bytes(v) => Ok(v.clone())
+            Prim::Bytes(v) => Ok(v.clone()),
+            _ => Err(Error::State("Expected Bytes".into()))
         }
+    }
+}
+
+impl<'a> From<bool> for Prim {
+    fn from(v: bool) -> Self {
+        Prim::Bool(v)
     }
 }
 
