@@ -1,7 +1,4 @@
-extern crate time;
 extern crate git2;
-extern crate rmp_serde;
-extern crate ring;
 
 use self::git2::{Repository, Commit};
 
@@ -11,20 +8,26 @@ use error::{Result, Error};
 use remote::Remote;
 
 pub fn fetch<'a>(repo: &'a Repository, remote: &Remote) -> Result<git2::Remote<'a>> {
-    eprintln!("fetching remote {}", &remote.name);
+    eprintln!("fetching remote: {}", &remote.name);
 
+    eprintln!("searching for existing remote in repo");
     let mut git_remote = match repo.find_remote(&remote.name) {
         Ok(git_remote) => git_remote,
-        Err(e) => {
-            eprintln!("find_remote failed: {:?}", e);
+        Err(_) => {
+            eprintln!("Failed to find remote '{}', adding remote to git", remote.name);
             // this remote is not added to git yet, we add it
             repo.remote(&remote.name, &remote.url)?
         }
     };
 
+    eprintln!("found a remote, starting fetch...");
+    
     let mut fetch_opt = git2::FetchOptions::new();
     fetch_opt.remote_callbacks(remote.git_callbacks());
     git_remote.fetch(&["master"], Some(&mut fetch_opt), None)?;
+
+    eprintln!("finished fetch");
+
     Ok(git_remote)
 }
 
@@ -138,14 +141,26 @@ pub fn sync<'a>(repo: &Repository, remote: &Remote, mut merger: &mut (FnMut(git2
         } else {
             return Err(Error::State(format!("Bad merge analysis result: {:?}", analysis)));
         }
+    } else {
+        eprintln!("no remote branch: {}", remote.name);
     }
-    
+
     eprintln!("pushing git_remote");
+
+    eprintln!("just for fun, here are the current references:");
+
+    for reference in repo.references()? {
+        let reference = reference.unwrap();
+        let name = reference.name().unwrap();
+        let target = reference.target().unwrap();
+        eprintln!("ref: {} => {}", name, target);
+    }
+
+    eprintln!("finished printing references");
+    
     let mut push_opt = git2::PushOptions::new();
     push_opt.remote_callbacks(remote.git_callbacks());
     git_remote.push(&[&"refs/heads/master"], Some(&mut push_opt))?;
     eprintln!("Finish push");
-    
-    // TAI: should return stats struct
     Ok(())
 }

@@ -75,7 +75,8 @@ impl Dao for Remote {
                 // These unwraps are safe to do since we've checked them above
                 map.update("name".as_bytes().to_vec(), |name_reg| {
                     let mut name_reg = name_reg.unwrap().to_reg().unwrap();
-                    name_reg.update(Prim::Str(name), dot).unwrap(); // TAI: how to deal with failures within the update function?
+                    // TAI: how to deal with failures within the update function?
+                    name_reg.update(Prim::Str(name), dot).unwrap();
                     Some(Block::Reg(name_reg))
                 }, sess.actor);
 
@@ -131,6 +132,7 @@ impl Dao for Remote {
 
                 map
             };
+            
             db.set(key.into_bytes(), Block::Map(new_map), &sess)?;
         } else {
             db.del(&key.into_bytes(), &sess)?;

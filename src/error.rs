@@ -1,5 +1,5 @@
 extern crate git2;
-extern crate rmp_serde;
+extern crate bincode;
 extern crate data_encoding;
 extern crate crdts;
 extern crate sled;
@@ -18,8 +18,7 @@ pub enum Error {
     Crypto(String),
     Version(String),
     State(String),
-    SerdeRMPDecode(rmp_serde::decode::Error),
-    SerdeRMPEncode(rmp_serde::encode::Error),
+    Bincode(bincode::Error),
     CRDT(crdts::Error),
     Git(git2::Error),
     IO(std::io::Error),
@@ -46,8 +45,7 @@ impl fmt::Display for Error {
                 write!(f, "Version failure: {}", s),
             Error::State(s) =>
                 write!(f, "Gitdb entered a bad state: {}", s),
-            Error::SerdeRMPDecode(e) => e.fmt(&mut f),
-            Error::SerdeRMPEncode(e) => e.fmt(&mut f),
+            Error::Bincode(e) => e.fmt(&mut f),
             Error::CRDT(e) => e.fmt(&mut f),
             Error::Git(e) => e.fmt(&mut f),
             Error::IO(e) => e.fmt(&mut f),
@@ -68,8 +66,7 @@ impl std::error::Error for Error {
             Error::Crypto(_) => "Crypto failure",
             Error::Version(_) => "Version failure",
             Error::State(_) => "Gitdb entered a bad state",
-            Error::SerdeRMPDecode(e) => e.description(),
-            Error::SerdeRMPEncode(e) => e.description(),
+            Error::Bincode(e) => e.description(),
             Error::CRDT(e) => e.description(),
             Error::Git(e) => e.description(),
             Error::IO(e) => e.description(),
@@ -87,8 +84,7 @@ impl std::error::Error for Error {
             Error::Crypto(_) => None,
             Error::Version(_) => None,
             Error::State(_) => None,
-            Error::SerdeRMPDecode(e) => Some(e),
-            Error::SerdeRMPEncode(e) => Some(e),
+            Error::Bincode(e) => Some(e),
             Error::CRDT(e) => Some(e),
             Error::Git(e) => Some(e),
             Error::IO(e) => Some(e),
@@ -122,15 +118,9 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<rmp_serde::decode::Error> for Error {
-    fn from(err: rmp_serde::decode::Error) -> Self {
-        Error::SerdeRMPDecode(err)
-    }
-}
-
-impl From<rmp_serde::encode::Error> for Error {
-    fn from(err: rmp_serde::encode::Error) -> Self {
-        Error::SerdeRMPEncode(err)
+impl From<bincode::Error> for Error {
+    fn from(err: bincode::Error) -> Self {
+        Error::Bincode(err)
     }
 }
 

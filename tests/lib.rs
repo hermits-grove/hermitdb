@@ -3,14 +3,19 @@ extern crate tempfile;
 extern crate crdts;
 extern crate time;
 
+#[macro_use]
+extern crate assert_matches;
+
+use gitdb::{DB, Session, Dao, Block, Prim};
+
 #[derive(Debug, PartialEq)]
 struct User {
     name: String,
     age: f64
 }
 
-impl gitdb::Dao for User {
-    fn val(prefix: &str, db: &gitdb::DB, sess: &gitdb::Session) -> Result<Option<User>, gitdb::Error> {
+impl Dao for User {
+    fn val(prefix: &str, db: &DB, sess: &Session) -> Result<Option<User>, gitdb::Error> {
         let key = format!("{}$user", prefix);
         let map = if let Some(block) = db.get(&key.into_bytes(), &sess)? {
             block.to_map()?
@@ -33,37 +38,37 @@ impl gitdb::Dao for User {
         Ok(Some(User { name, age }))
     }
 
-    fn update<F>(prefix: &str, db: &mut gitdb::DB, sess: &gitdb::Session, func: F) -> Result<(), gitdb::Error>
+    fn update<F>(prefix: &str, db: &mut DB, sess: &Session, func: F) -> Result<(), gitdb::Error>
         where F: FnOnce(Option<Self>) -> Option<Self>
     {
         
         let key = format!("{}$user", prefix);
-        let user = gitdb::Dao::val(&prefix, &db, &sess)?;
+        let user = User::val(&prefix, &db, &sess)?;
+
         if let Some(User { name, age }) = func(user) {
             let time = time::get_time();
             let dot = ((time.sec, time.nsec), sess.actor);
-            
             let map = if let Some(block) = db.get(&key.clone().into_bytes(), &sess)? {
                 let mut map = block.to_map().unwrap(); // this should be safe since it's checked in val()
                 map.update("name".as_bytes().to_vec(), |block| {
                     let mut reg = block.unwrap().to_reg().unwrap(); // this should be safe
-                    reg.update(gitdb::Prim::Str(name), dot).unwrap();
-                    Some(gitdb::Block::Reg(reg))
+                    reg.update(Prim::Str(name), dot).unwrap();
+                    Some(Block::Reg(reg))
                 }, sess.actor);
 
                 map.update("age".as_bytes().to_vec(), |block| {
                     let mut reg = block.unwrap().to_reg().unwrap(); // this should be safe
-                    reg.update(gitdb::Prim::F64(age), dot).unwrap();
-                    Some(gitdb::Block::Reg(reg))
+                    reg.update(Prim::F64(age), dot).unwrap();
+                    Some(Block::Reg(reg))
                 }, sess.actor);
                 map
             } else {
                 let mut map = crdts::Map::new();
-                map.insert("name".as_bytes().to_vec(), gitdb::Block::Reg(crdts::LWWReg { val: gitdb::Prim::Str(name), dot }), sess.actor);
-                map.insert("age".as_bytes().to_vec(), gitdb::Block::Reg(crdts::LWWReg { val: gitdb::Prim::F64(age), dot }), sess.actor);
+                map.insert("name".as_bytes().to_vec(), Block::Reg(crdts::LWWReg { val: Prim::Str(name), dot }), sess.actor);
+                map.insert("age".as_bytes().to_vec(), Block::Reg(crdts::LWWReg { val: Prim::F64(age), dot }), sess.actor);
                 map
             };
-            db.set(key.into_bytes(), gitdb::Block::Map(map), &sess)?;
+            db.set(key.into_bytes(), Block::Map(map), &sess)?;
         } else {
             db.del(&key.into_bytes(), &sess)?;
         }
@@ -76,7 +81,7 @@ fn init() {
     let dir = tempfile::tempdir().unwrap();
     let dir_path = dir.path().to_owned();
     let git_root = dir_path.join("db");
-    gitdb::DB::init(&git_root).unwrap();
+    DB::init(&git_root).unwrap();
     assert!(git_root.is_dir());
 }
 
@@ -85,7 +90,7 @@ fn dao_read_write_read() {
     let dir = tempfile::tempdir().unwrap();
     let dir_path = dir.path().to_owned();
     let git_root = dir_path.join("db");
-    let mut db = gitdb::DB::init(&git_root).unwrap();
+    let mut db = DB::init(&git_root).unwrap();
 
     let kdf = gitdb::crypto::KDF {
         pbkdf2_iters: 1000,
@@ -93,15 +98,15 @@ fn dao_read_write_read() {
         entropy: gitdb::crypto::create_entropy_file(&dir_path).unwrap()
     };
 
-    let sess = gitdb::Session {
+    let sess = Session {
         actor: 0,
         master_key: kdf.master_key("super secret".as_bytes())
     };
 
-    let res: Result<Option<User>, _> = gitdb::Dao::val("bob", &db, &sess);
-    assert!(res.is_err()); // key should not exist
+    // key should not exist yet
+    assert_matches!(User::val("bob", &db, &sess), Ok(None));
 
-    gitdb::Dao::update("bob", &mut db, &sess, |user_opt| match user_opt {
+    User::update("bob", &mut db, &sess, |user_opt| match user_opt {
         Some(_) => panic!("we should not have any data yet"),
         None => Some(User {
             name: "Bob".to_string(),
@@ -109,15 +114,15 @@ fn dao_read_write_read() {
         })
     }).unwrap();
 
-    let res2 = gitdb::Dao::val("bob", &db, &sess);
-    assert!(res2.is_ok());
-    let bob = res2.unwrap();
+    let res = User::val("bob", &db, &sess);
+    assert_matches!(res, Ok(Some(_)));
+    let bob = res.unwrap().unwrap();
     assert_eq!(
         bob,
-        Some(User {
+        User {
             name: "Bob".to_string(),
             age: 37.9
-        })
+        }
     );
 }
 
@@ -142,25 +147,28 @@ fn sync() {
         entropy: gitdb::crypto::create_entropy_file(&remote_root).unwrap()
     };
 
-    let mut db_a = gitdb::DB::init(&git_root_a).unwrap();
-    let sess_a = gitdb::Session {
+    let mut db_a = DB::init(&git_root_a).unwrap();
+    let sess_a = Session {
         actor: 1,
         master_key: kdf.master_key("super secret".as_bytes())
     };
 
     let remote_url = format!("file://{}", remote_root.to_str().unwrap());
     let remote = gitdb::Remote::no_auth("local_remote".into(), remote_url);
-    
-    gitdb::Dao::update("db", &mut db_a, &sess_a, |block| match block {
-        None => Some(remote.clone()),
+
+
+    gitdb::Remote::update("db", &mut db_a, &sess_a, |block| match block {
+        None => {
+            Some(remote.clone())
+        },
         Some(_) => panic!("No remotes should exist yet!")
     }).unwrap();
 
-    db_a.sync(&sess_a).unwrap();
+    assert_matches!(db_a.sync(&sess_a), Ok(()));
 
-    let mut db_b = gitdb::DB::init_from_remote(&git_root_b, &remote).unwrap();
+    let mut db_b = DB::init_from_remote(&git_root_b, &remote).unwrap();
 
-    let sess_b = gitdb::Session {
+    let sess_b = Session {
         actor: 2,
         master_key: kdf.master_key("super secret".as_bytes())
     };
@@ -171,7 +179,7 @@ fn sync() {
     // POST SYNC:
     //   both sites A and B should have same sam and bob entries
     
-    gitdb::Dao::update("sam", &mut db_a, &sess_a, |val| match val {
+    User::update("sam", &mut db_a, &sess_a, |val| match val {
         Some(_) => panic!("we should not have any data yet"),
         None => Some(User {
             name: "Sam".to_string(),
@@ -179,7 +187,7 @@ fn sync() {
         })
     }).unwrap();
     
-    gitdb::Dao::update("bob", &mut db_b, &sess_b, |val| match val {
+    User::update("bob", &mut db_b, &sess_b, |val| match val {
         Some(_) => panic!("we should not have any data yet"),
         None => Some(User {
             name: "Bob".to_string(),
@@ -190,14 +198,14 @@ fn sync() {
     db_a.sync(&sess_a).unwrap();
     db_b.sync(&sess_b).unwrap();
 
-    let sam_from_a: User = gitdb::Dao::val("sam", &db_a, &sess_a).unwrap().unwrap();
-    let sam_from_b: User = gitdb::Dao::val("sam", &db_b, &sess_b).unwrap().unwrap();
+    let sam_from_a = User::val("sam", &db_a, &sess_a).unwrap().unwrap();
+    let sam_from_b = User::val("sam", &db_b, &sess_b).unwrap().unwrap();
     assert_eq!(sam_from_a, sam_from_b);
 
     db_a.sync(&sess_a).unwrap();
     db_b.sync(&sess_b).unwrap();
-    let bob_from_a: User = gitdb::Dao::val("bob", &db_a, &sess_a).unwrap().unwrap();
-    let bob_from_b: User = gitdb::Dao::val("bob", &db_b, &sess_b).unwrap().unwrap();
+    let bob_from_a = User::val("bob", &db_a, &sess_a).unwrap().unwrap();
+    let bob_from_b = User::val("bob", &db_b, &sess_b).unwrap().unwrap();
     
     assert_eq!(bob_from_a, bob_from_b);
 
@@ -207,7 +215,7 @@ fn sync() {
     // POST SYNC:
     //   both sites A and B should converge to the same alice age value
 
-    gitdb::Dao::update("alice", &mut db_a, &sess_a, |val| match val {
+    User::update("alice", &mut db_a, &sess_a, |val| match val {
         Some(_) => panic!("we should not have any data yet"),
         None => Some(User {
             name: "Alice".to_string(),
@@ -215,7 +223,7 @@ fn sync() {
         })
     }).unwrap();
 
-    gitdb::Dao::update("alice", &mut db_b, &sess_b, |val| match val {
+    User::update("alice", &mut db_b, &sess_b, |val| match val {
         Some(_) => panic!("we should not have any data yet"),
         None => Some(User {
             name: "Alice".to_string(),
@@ -228,11 +236,11 @@ fn sync() {
     db_a.sync(&sess_a).unwrap();
 
     {
-        let alice_from_a: User = gitdb::Dao::val("alice", &db_a, &sess_a).unwrap().unwrap();
-        let alice_from_b: User = gitdb::Dao::val("alice", &db_b, &sess_b).unwrap().unwrap();
+        let alice_from_a = User::val("alice", &db_a, &sess_a).unwrap().unwrap();
+        let alice_from_b = User::val("alice", &db_b, &sess_b).unwrap().unwrap();
         assert_eq!(alice_from_a, alice_from_b);
 
-        gitdb::Dao::update("alice", &mut db_b, &sess_b, |val| match val {
+        User::update("alice", &mut db_b, &sess_b, |val| match val {
             Some(User { name, age }) => Some(User { name, age: age + 0.5 }),
             None => panic!("we should have data!")
         }).unwrap();
@@ -244,8 +252,8 @@ fn sync() {
 
     {
         
-        let alice_from_a: User = gitdb::Dao::val("alice", &db_a, &sess_a).unwrap().unwrap();
-        let alice_from_b: User = gitdb::Dao::val("alice", &db_b, &sess_b).unwrap().unwrap();
+        let alice_from_a = User::val("alice", &db_a, &sess_a).unwrap().unwrap();
+        let alice_from_b = User::val("alice", &db_b, &sess_b).unwrap().unwrap();
 
         assert_eq!(alice_from_a, alice_from_b);
         assert_eq!(alice_from_a.age, 33.);

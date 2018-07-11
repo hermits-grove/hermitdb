@@ -1,7 +1,7 @@
 // TODO: rename KEY_FILE to ENTROPY_FILE
 extern crate time;
 extern crate git2;
-extern crate rmp_serde;
+extern crate bincode;
 extern crate ring;
 extern crate sled;
 extern crate crdts;
@@ -30,38 +30,6 @@ struct Entry {
     clock: crdts::VClock<u128>,
     birth_clock: crdts::VClock<u128>,
     val: Block
-}
-
-impl Dao for crdts::VClock<u128> {
-    fn val(prefix: &str, db: &DB, sess: &Session) -> Result<Option<Self>> {
-        let key = format!("{}$clock", prefix);
-
-        if let Some(block) = db.get(&key.into_bytes(), &sess)? {
-            let clock = block.to_vclock()?;
-            Ok(Some(clock))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn update<F>(prefix: &str, db: &mut DB, sess: &Session, func: F) -> Result<()>
-        where F: FnOnce(Option<Self>) -> Option<Self> {
-        let key = format!("{}$clock", prefix);
-
-        let vclock_opt = if let Some(block) = db.get(&key.clone().into_bytes(), &sess)? {
-            let clock = block.to_vclock()?;
-            Some(clock)
-        } else {
-            None
-        };
-
-        if let Some(clock) = func(vclock_opt) {
-            db.set(key.into_bytes(), Block::VClock(clock), &sess)?;
-        } else {
-            db.del(&key.into_bytes(), &sess)?;
-        }
-        Ok(())
-    }
 }
 
 impl DB {
@@ -94,9 +62,20 @@ impl DB {
         DB::open(&root)
     }
 
+    fn bump_actor(&self, sess: &Session) -> Result<u64> {
+        let mut clock = if let Some(b) = self.tree.get("db_clock".as_bytes())? {
+            bincode::deserialize(&b)?
+        } else {
+            crdts::VClock::new()
+        };
+        let actor_version = clock.increment(sess.actor);
+        self.tree.set("db_global_clock".as_bytes().to_vec(), bincode::serialize(&clock)?)?;
+        Ok(actor_version)
+    }
+
     pub fn get(&self, key: &[u8], _sess: &Session) -> Result<Option<Block>> {
         let res = if let Some(bytes) = self.tree.get(key)? {
-            let entry: Entry = rmp_serde::from_slice(&bytes)?;
+            let entry: Entry = bincode::deserialize(&bytes)?;
             Some(entry.val)
         } else {
             None
@@ -105,17 +84,11 @@ impl DB {
         Ok(res)
     }
     
-    /// WARNING, set() discards causality of the underlying CRDT
+    /// WARNING, `set` discards causality of the underlying CRDT
     ///          it also resets the birth_clock
     /// TODO: explain semantics of this method more
     pub fn set(&mut self, key: Vec<u8>, val: Block, sess: &Session) -> Result<()> {
-        let mut actor_version = 0u64;
-        Dao::update("db", self, &sess, |clock| {
-            let mut clock = clock
-                .unwrap_or_else(|| crdts::VClock::new());
-            actor_version = clock.increment(sess.actor);
-            Some(clock)
-        })?;
+        let actor_version = self.bump_actor(&sess)?;
 
         let mut clock = crdts::VClock::new();
         clock.witness(sess.actor, actor_version)?;
@@ -124,23 +97,17 @@ impl DB {
 
         let entry = Entry { clock, birth_clock, val };
 
-        let val = rmp_serde::to_vec(&entry)?;
-        self.tree.set(key, val)?;
+        let val_bytes = bincode::serialize(&entry)?;
+        self.tree.set(key, val_bytes)?;
         self.tree.flush()?;
         Ok(())
     }
 
     pub fn del(&mut self, key: &[u8], sess: &Session) -> Result<Option<Block>> {
-        let mut actor_version = 0u64;
-        Dao::update("db", self, &sess, |clock| {
-            let mut clock = clock
-                .unwrap_or_else(|| crdts::VClock::new());
-            actor_version = clock.increment(sess.actor);
-            Some(clock)
-        })?;
+        self.bump_actor(&sess)?;
         
         let res = if let Some(bytes) = self.tree.del(key)? {
-            let entry: Entry = rmp_serde::from_slice(&bytes)?;
+            let entry: Entry = bincode::deserialize(&bytes)?;
             Some(entry.val)
         } else {
             None
@@ -154,7 +121,7 @@ impl DB {
     //         .iter()
     //         .map(|res: sled::DbResult<(Vec<u8>, Vec<u8>), ()>| -> (Vec<u8>, Block) {
     //             let (key, val_bytes) = res.unwrap();
-    //             let entry: Entry = rmp_serde::from_slice(&val_bytes).unwrap();
+    //             let entry: Entry = bincode::deserialize(&val_bytes).unwrap();
     //             (key, entry.val)
     //         })
     // }
@@ -192,8 +159,7 @@ impl DB {
             }
         };
 
-        git_helper::sync(&self.repo, &remote, &mut merger)?;
-        Ok(())
+        git_helper::sync(&self.repo, &remote, &mut merger)
     }
 
     fn write_file(path: &Path, data: &[u8]) -> Result<()> {
@@ -242,7 +208,7 @@ impl DB {
         // let old_blob = self.repo.find_blob(old.id())?;
         // let new_blob = self.repo.find_blob(new.id())?;
         // 
-        // self.write_file(&rel_path, &rmp_serde::to_vec(&encrypted)?)?;
+        // self.write_file(&rel_path, &bincode::deserialize(&encrypted)?)?;
         // git_helper::stage_file(&self.repo, &rel_path)?;
         // 
         // Ok(())
