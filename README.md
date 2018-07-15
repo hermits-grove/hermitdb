@@ -29,22 +29,12 @@ This is done to avoid generating an excessive number of commits. The cached `Op`
 {
   "dot": {
       "actor": base64(98), // Actor chosen randomly, 128 bits to avoid collision
-      "version: 33
+      "version": 33
   },
   "op": {
     "action": "remove",
     "key": base64("xyz".to_bytes()), // no key encoding restrictions, just bytes
     "type": "map"
-  }
-}
-
-{
-  "action": "remove",
-  "key": base64("xyz".to_bytes()),                                     r
-  "type": "map", // key + type identify an entry, `type` avoids merge conflict
-  "dot": {
-    "actor": base64(98),
-    "version": 32 // u64 actor version number
   }
 }
 
@@ -55,7 +45,7 @@ This is done to avoid generating an excessive number of commits. The cached `Op`
 {
   "dot": {
     "actor": base64(98),
-    "version: 33
+    "version": 33
   },
   "op": {
     "action": "update",
