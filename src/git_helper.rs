@@ -84,6 +84,13 @@ pub fn stage_file(repo: &Repository, file: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn stage_globs(repo: &Repository, globs: &[&str]) -> Result<()> {
+    let mut index = repo.index()?;
+    index.add_all(globs, git2::IndexAddOption::DEFAULT, None)?;
+    index.write()?;
+    Ok(())
+}
+
 pub fn fast_forward(repo: &Repository, branch: &git2::Branch) -> Result<()> {
     eprintln!("fast forwarding repository to match branch {:?}", branch.name()?);
     let remote_commit_oid = branch.get().resolve()?.target()

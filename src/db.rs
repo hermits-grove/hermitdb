@@ -100,6 +100,8 @@ impl DB {
         let val_bytes = bincode::serialize(&entry)?;
         self.tree.set(key, val_bytes)?;
         self.tree.flush()?;
+
+        git_helper::stage_globs(&self.repo, &["db", "conf", "snap.*"])?;
         Ok(())
     }
 
@@ -113,6 +115,8 @@ impl DB {
             None
         };
         self.tree.flush()?;
+
+        git_helper::stage_globs(&self.repo, &["db", "conf", "snap.*"])?;
         Ok(res)
     }
 
@@ -127,6 +131,8 @@ impl DB {
     // }
 
     pub fn sync(&mut self, sess: &Session) -> Result<()> {
+        self.tree.flush()?;
+
         let remote: Remote = Dao::val("db", self, &sess)
             ?.ok_or(Error::NoRemote)?;
 
@@ -195,6 +201,7 @@ impl DB {
         DB::write_file(&path.join(rel_path), new_blob.content())?;
 
         eprintln!("wrote added file to workdir");
+        
         git_helper::stage_file(&self.repo, &rel_path)?;
         Ok(())
     }

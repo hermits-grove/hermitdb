@@ -7,6 +7,7 @@ extern crate time;
 extern crate assert_matches;
 
 use gitdb::{DB, Session, Dao, Block, Prim};
+use std::path::Path;
 
 #[derive(Debug, PartialEq)]
 struct User {
@@ -130,14 +131,17 @@ fn dao_read_write_read() {
 fn sync() {
     use std::io::{Write, stdout};
     stdout().flush().ok();
-    let remote_root_dir = tempfile::tempdir().unwrap();
-    let remote_root = remote_root_dir.path();
-    let root_a_dir = tempfile::tempdir().unwrap();
-    let root_a = root_a_dir.path();
-    let root_b_dir = tempfile::tempdir().unwrap();
-    let root_b = root_b_dir.path();
-    let git_root_a = root_a.join("db");
-    let git_root_b = root_b.join("db");
+    // let remote_root_dir = tempfile::tempdir().unwrap();
+    // let remote_root = remote_root_dir.path();
+    // let root_a_dir = tempfile::tempdir().unwrap();
+    // let root_a = root_a_dir.path();
+    // let root_b_dir = tempfile::tempdir().unwrap();
+    // let root_b = root_b_dir.path();
+    let remote_root: &Path = Path::new("/Users/davidrusu/gitdb/remote");
+    let root_a: &Path = Path::new("/Users/davidrusu/gitdb/a");
+    let root_b: &Path = Path::new("/Users/davidrusu/gitdb/b");
+    let git_root_a: &Path = &root_a.join("db");
+    let git_root_b: &Path = &root_b.join("db");
 
     gitdb::git2::Repository::init_bare(&remote_root).unwrap();
 
@@ -167,7 +171,7 @@ fn sync() {
     assert_matches!(db_a.sync(&sess_a), Ok(()));
 
     let mut db_b = DB::init_from_remote(&git_root_b, &remote).unwrap();
-
+    println!("finished initializing db_b from remote");
     let sess_b = Session {
         actor: 2,
         master_key: kdf.master_key("super secret".as_bytes())
