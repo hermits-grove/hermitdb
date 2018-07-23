@@ -18,8 +18,11 @@ struct Dot {
 }
 
 enum Update {
-    Map,
-    Reg
+    SetValue {
+        action:
+    },
+    Reg {
+    }
 }
 
 struct Op {

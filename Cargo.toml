@@ -15,6 +15,9 @@ time = "0.1.39"
 tempfile = "3.0.1"
 assert_matches = "1.2.0"
 
+[dev-dependencies]
+quickcheck = "0.6.2"
+
 [dependencies.sled]
 path = "../sled/crates/sled"
 

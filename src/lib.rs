@@ -9,12 +9,14 @@ pub mod crypto;
 pub mod encoding;
 pub mod remote;
 pub mod db;
-pub mod block;
 pub mod dao;
+pub mod log;
+pub mod memory_log;
+pub mod git_log;
 
 pub use error::Error;
 pub use db::DB;
 pub use crypto::{Session, Plaintext, Encrypted};
-pub use block::{Block, Prim};
 pub use remote::Remote;
 pub use dao::Dao;
+pub use log::{LogReplicable, TaggedOp};

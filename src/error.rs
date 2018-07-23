@@ -8,12 +8,15 @@ use std::{self, fmt};
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+// TODO: audit usage of these error types, I have a feeling not all of these are used
 #[derive(Debug)]
 pub enum Error {
     NotFound,
-    BlockTypeConflict,
     NoRemote,
     DaoField(String),
+    BranchNameEncodingError,
+    BranchIsNotADirectReference,
+    LogCommitDoesNotContainOp,
     Parse(String),
     Crypto(String),
     Version(String),
@@ -31,10 +34,14 @@ impl fmt::Display for Error {
         match self {
             Error::NotFound =>
                 write!(f, "Key not found"),
-            Error::BlockTypeConflict =>
-                write!(f, "Attempted to merge different block types"),
             Error::NoRemote =>
                 write!(f, "No Git remote has been added to the db"),
+            Error::BranchNameEncodingError =>
+                write!(f, "A branch name is not utf8 encoded"),
+            Error::BranchIsNotADirectReference =>
+                write!(f, "A branch reference isn't a direct ref to an oid"),
+            Error::LogCommitDoesNotContainOp =>
+                write!(f, "Trees attached to commits in git are expected to have an 'op' entry"),
             Error::DaoField(s) =>
                 write!(f, "Dao Field error: {}", s),
             Error::Parse(s) =>
@@ -59,9 +66,14 @@ impl std::error::Error for Error {
     fn description(&self) -> &str {
         match self {
             Error::NotFound => "Key was not found",
-            Error::BlockTypeConflict => "Merge blocks with different types",
             Error::NoRemote => "No Git remote has been added to the db",
-            Error::DaoField(_) => "Problem with field while processing Dao request",
+            Error::BranchNameEncodingError => "A branch name is not utf8 encoded",
+            Error::BranchIsNotADirectReference =>
+                "A branch reference isn't a direct ref to an oid",
+            Error::LogCommitDoesNotContainOp =>
+                "Trees attached to commits in git are expected to have an 'op' entry",
+            Error::DaoField(_) =>
+                "Problem with field while processing Dao request",
             Error::Parse(_) => "Parsing failed",
             Error::Crypto(_) => "Crypto failure",
             Error::Version(_) => "Version failure",
@@ -77,8 +89,10 @@ impl std::error::Error for Error {
     fn cause(&self) -> Option<&std::error::Error> {
         match self {
             Error::NotFound => None,
-            Error::BlockTypeConflict => None,
             Error::NoRemote => None,
+            Error::BranchNameEncodingError => None,
+            Error::BranchIsNotADirectReference => None,
+            Error::LogCommitDoesNotContainOp => None,
             Error::DaoField(_) => None,
             Error::Parse(_) => None,
             Error::Crypto(_) => None,
