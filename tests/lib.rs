@@ -1,16 +1,16 @@
-extern crate gitdb;
-extern crate tempfile;
-extern crate crdts;
-extern crate time;
-
-#[macro_use]
-extern crate assert_matches;
-
-#[macro_use]
-extern crate quickcheck;
-
-use gitdb::{DB, Session, Dao};
-use std::path::Path;
+// extern crate gitdb;
+// extern crate tempfile;
+// extern crate crdts;
+// extern crate time;
+// 
+// #[macro_use]
+// extern crate assert_matches;
+// 
+// #[macro_use]
+// extern crate quickcheck;
+// 
+// use gitdb::{DB, Session, Dao};
+// use std::path::Path;
 
 // #[derive(Debug, PartialEq)]
 // struct User {

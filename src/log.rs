@@ -1,5 +1,7 @@
 extern crate crdts;
 
+use std::fmt::Debug;
+
 use crdts::{CmRDT, Actor};
 use error::Result;
 
@@ -11,7 +13,7 @@ pub trait TaggedOp<C: CmRDT> {
 }
 
 pub trait LogReplicable<A: Actor, C: CmRDT> {
-    type Op: TaggedOp<C>;
+    type Op: Debug + TaggedOp<C>;
 
     fn next(&self) -> Result<Option<Self::Op>>;
     fn ack(&mut self, op: &Self::Op) -> Result<()>;

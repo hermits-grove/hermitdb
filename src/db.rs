@@ -17,8 +17,6 @@ use remote::Remote;
 use git_helper;
 
 pub struct DB {
-    repo: Repository,
-    tree: sled::Tree
 }
 
 impl DB {
@@ -49,24 +47,5 @@ impl DB {
         )?;
 
         DB::open(&root)
-    }
-
-    fn write_file(path: &Path, data: &[u8]) -> Result<()> {
-        match path.parent() {
-            Some(parent) =>
-                std::fs::create_dir_all(&parent),
-            None => Ok(()) // no parent to create
-        }?;
-
-        // File::create will replace existing files
-        let mut f = std::fs::File::create(&path)?;
-
-        match f.write_all(&data) {
-            Err(e) => {
-                std::fs::remove_file(&path)?;
-                Err(Error::IO(e))
-            },
-            _ => Ok(())
-        }
     }
 }

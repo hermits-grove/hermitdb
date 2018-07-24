@@ -4,8 +4,7 @@ extern crate serde;
 use std::str::FromStr;
 use std::string::ToString;
 use std::fmt::Debug;
-
-use std::collections::BTreeMap;
+use std::marker::PhantomData;
 
 use self::serde::de::DeserializeOwned;
 use self::serde::Serialize;
@@ -22,7 +21,7 @@ pub struct Auth {
     pass: String
 }
 
-pub struct GitLog<A: Actor, C: CmRDT>
+pub struct GitLog<A: Actor, C: Debug + CmRDT>
     where C::Op : DeserializeOwned + Serialize + Eq
 {
     actor: A,
@@ -30,12 +29,12 @@ pub struct GitLog<A: Actor, C: CmRDT>
     url: String,
     auth: Option<Auth>,
     repo: git2::Repository,
-    cache: BTreeMap<A, C> // I added this to constrain both A and C, it's not currently being used
+    phantom_crdt: PhantomData<C>
 }
 
 #[serde(bound(deserialize = ""))]
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Op<A: Actor, C: CmRDT + Eq>
+pub struct Op<A: Actor, C: Debug + CmRDT + Eq>
     where C::Op : DeserializeOwned + Serialize + Eq
 {
     actor: A,
@@ -43,7 +42,7 @@ pub struct Op<A: Actor, C: CmRDT + Eq>
     op: C::Op
 }
 
-impl<A: Actor, C: CmRDT + Eq> TaggedOp<C> for Op<A, C>
+impl<A: Actor, C: Debug + CmRDT + Eq> TaggedOp<C> for Op<A, C>
     where C::Op : DeserializeOwned + Serialize + Eq
 {
     type ID = git2::Oid;
@@ -57,7 +56,7 @@ impl<A: Actor, C: CmRDT + Eq> TaggedOp<C> for Op<A, C>
     }
 }
 
-impl<A: Actor, C: CmRDT + Eq> Op<A, C>
+impl<A: Actor, C: Debug + CmRDT + Eq> Op<A, C>
     where C::Op : DeserializeOwned + Serialize + Eq
 {
     pub fn from_commit(actor: A, repo: &git2::Repository, commit: &git2::Commit) -> Result<Self> {
@@ -134,7 +133,7 @@ impl<A: Actor, C: CmRDT + Eq> Op<A, C>
 
 impl<A, C> LogReplicable<A, C> for GitLog<A, C> where
     A: Actor + FromStr + ToString + Debug,
-    C: CmRDT + Eq + Serialize + DeserializeOwned, // NOT SURE WHY I NEED SERDE BOUNDS ON `C`
+    C: Debug + CmRDT + Eq + Serialize + DeserializeOwned, // NOT SURE WHY I NEED SERDE BOUNDS ON `C`
     C::Op : DeserializeOwned + Serialize + Eq
 {
     type Op = Op<A, C>;
@@ -312,7 +311,7 @@ impl<A, C> LogReplicable<A, C> for GitLog<A, C> where
     }
 }
 
-impl<A: Actor, C: CmRDT> GitLog<A, C>
+impl<A: Actor, C: Debug + CmRDT> GitLog<A, C>
     where C::Op : DeserializeOwned + Serialize + Eq
 {
     pub fn auth(actor: A, repo: git2::Repository, name: String, url: String, user: String, pass: String) -> Self {
@@ -322,7 +321,7 @@ impl<A: Actor, C: CmRDT> GitLog<A, C>
             auth: Some(Auth { user, pass }),
             actor: actor,
             repo: repo,
-            cache: BTreeMap::new()
+            phantom_crdt: PhantomData
         }
     }
 
@@ -333,7 +332,7 @@ impl<A: Actor, C: CmRDT> GitLog<A, C>
             auth: None,
             actor: actor,
             repo: repo,
-            cache: BTreeMap::new()
+            phantom_crdt: PhantomData
         }
     }
 

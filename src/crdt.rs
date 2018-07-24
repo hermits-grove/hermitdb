@@ -1,67 +1,45 @@
+use std::marker::PhantomData;
+use std::fmt::Debug;
+
+use bincode;
+use sled;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-use error::Result;
+use error::{self, Error, Result};
 use crdts::traits::{Causal, CvRDT, CmRDT};
 use crdts::vclock::{VClock, Actor};
-use std::collections::BTreeMap;
+use crdts;
 
 /// Key Trait alias to reduce redundancy in type decl.
-pub trait Key: Ord + Clone + Send + Serialize + DeserializeOwned {}
-impl<T: Ord + Clone + Send + Serialize + DeserializeOwned> Key for T {}
+pub trait Key: Debug + Ord + Clone + Send + Serialize + DeserializeOwned {}
+impl<T: Debug + Ord + Clone + Send + Serialize + DeserializeOwned> Key for T {}
 
 /// Val Trait alias to reduce redundancy in type decl.
 pub trait Val<A: Actor>
-    : Default + Clone + Send + Serialize + DeserializeOwned
+    : Debug + Default + Clone + Send + Serialize + DeserializeOwned
     + Causal<A> + CmRDT + CvRDT
 {}
 
 impl<A, T> Val<A> for T where
     A: Actor,
-    T: Default + Clone + Send + Serialize + DeserializeOwned
+    T: Debug + Default + Clone + Send + Serialize + DeserializeOwned
     + Causal<A> + CmRDT + CvRDT
 {}
 
-trait StorageLayer<K, V> {
-    fn put(&mut self, key: K, val: V) -> Result<()>;
-    fn get(&self, key: &K) -> Result<Option<V>>;
-    fn rm(&mut self, key: &K) -> Result<Option<V>>;
-    fn len(&self) -> Result<usize>;
-}
-
-struct MemoryMap<K, V>(BTreeMap<K, V>);
-
-impl<K, V> StorageLayer<K, V> for MemoryMap<K, V> {
-    fn put(&mut self, key: K, val: V) -> Result<()> {
-        Ok(self.0.insert(key, val));
-    }
-
-    fn get(&self, key: &K) -> Result<Option<V>> {
-        Ok(self.0.get(key))
-    }
-
-    fn rm(&mut self, key: &K) -> Result<Option<V>> {
-        Ok(self.0.remove(key))
-    }
-
-    fn len(&self) -> usize {
-        self.0.len()
-    }
-}
-
-#[serde(bound(deserialize = ""))]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Map<K: Key, V: Val<A>, A: Actor, S>
-    where S: StorageLayer<K, Entry<V, A>> {
+#[derive(Debug)]
+pub struct Map<K: Key, V: Val<A>, A: Actor> {
     // This clock stores the current version of the Map, it should
-    // be greator or equal to all Entry.clock's in the Map.
-    clock: VClock<A>,
-    entries: S
+    // be greator or equal to all Entry clock's in the Map.
+    tree: sled::Tree,
+    phantom_key: PhantomData<K>,
+    phantom_val: PhantomData<V>,
+    phantom_actor: PhantomData<A>
 }
 
 #[serde(bound(deserialize = ""))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-struct Entry<V: Val<A>, A: Actor> {
+pub struct Entry<V: Val<A>, A: Actor> {
     // The entry clock tells us which actors have last changed this entry.
     // This clock will tell us what to do with this entry in the case of a merge
     // where only one map has this entry.
@@ -80,6 +58,33 @@ struct Entry<V: Val<A>, A: Actor> {
 
     // The nested CRDT
     val: V
+}
+
+pub struct Iter<'a, K: Key, V: Val<A>, A: Actor> {
+    iter: sled::Iter<'a>,
+    phantom_key: PhantomData<K>,
+    phantom_val: PhantomData<V>,
+    phantom_actor: PhantomData<A>
+}
+
+impl<'a, K: Key, V: Val<A>, A: Actor> Iterator for Iter<'a, K, V, A> {
+    type Item = Result<(K, V)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.iter.next() {
+            Some(Ok((k, v))) => {
+                let res = bincode::deserialize(&k[KEY_PREFIX.len()..])
+                    .and_then(|key: K| {
+                        bincode::deserialize(&v)
+                            .map(|val: Entry<V, A>| (key, val.val))
+                    });
+
+                Some(res.map_err(|e| Error::from(e)))
+            },
+            Some(Err(e)) => Some(Err(Error::from(e))),
+            None => None
+        }
+    }
 }
 
 /// Operations which can be applied to the Map CRDT
@@ -106,39 +111,57 @@ pub enum Op<K: Key, V: Val<A>, A: Actor> {
     }
 }
 
-impl<K: Key, V: Val<A>, A: Actor, S: StorageLayer<K, Entry<V, A>>> CmRDT for Map<K, V, A, S> {
+impl<K: Key + Debug, V: Val<A> + Debug, A: Actor> CmRDT for Map<K, V, A> {
+    type Error = error::Error;
     type Op = Op<K, V, A>;
 
     fn apply(&mut self, op: &Self::Op) -> Result<()> {
+        let mut map_clock = self.get_clock()?;
         match op.clone() {
             Op::Nop => {/* do nothing */},
             Op::Rm { clock, key } => {
-                if !(self.clock >= clock) {
-                    if let Some(mut entry) = self.entries.rm(&key)? {
+                if !(map_clock >= clock) {
+                    let key_bytes = self.key_bytes(&key)?;
+                    let del_res = self.tree.del(&key_bytes)?;
+                    if let Some(entry_bytes) = del_res {
+                        let mut entry: Entry<V, A> = bincode::deserialize(&entry_bytes)?;
                         entry.clock.subtract(&clock);
                         if !entry.clock.is_empty() {
                             entry.val.truncate(&clock);
-                            self.entries.put(key, entry)?;
+                            let new_entry_bytes = bincode::serialize(&entry)?;
+                            self.tree.set(key_bytes, new_entry_bytes)?;
                         } else {
-                            // the entries clock has been dominated by the
+                            // the entry clock has been dominated by the
                             // remove op clock, so we remove (already did)
                         }
                     }
-                    self.clock.merge(&clock);
+                    map_clock.merge(&clock);
+                    self.put_clock(map_clock)?;
+                    self.tree.flush()?;
                 }
             },
             Op::Up { clock, key, op } => {
-                if !(self.clock >= clock) {
-                    let mut entry = self.entries.rm(&key)
-                        ?.unwrap_or_else(|| Entry {
+                if !(map_clock >= clock) {
+                    let key_bytes = self.key_bytes(&key)?;
+                    let entry_res = self.tree.del(&key_bytes)?;
+
+                    let mut entry = if let Some(entry_bytes) = entry_res {
+                        bincode::deserialize(&entry_bytes)?
+                    } else {
+                        Entry {
                             clock: clock.clone(),
                             val: V::default()
-                        });
+                        }
+                    };
 
                     entry.clock.merge(&clock);
-                    entry.val.apply(&op)?;
-                    self.entries.put(key.clone(), entry);
-                    self.clock.merge(&clock);
+                    entry.val.apply(&op)
+                        .map_err(|_| crdts::Error::NestedOpFailed)?;
+                    let entry_bytes = bincode::serialize(&entry)?;
+                    self.tree.set(key_bytes, entry_bytes)?;
+                    map_clock.merge(&clock);
+                    self.put_clock(map_clock)?;
+                    self.tree.flush()?;
                 }
             }
         }
@@ -146,24 +169,46 @@ impl<K: Key, V: Val<A>, A: Actor, S: StorageLayer<K, Entry<V, A>>> CmRDT for Map
     }
 }
 
-impl<K: Key, V: Val<A>, A: Actor, S: StorageLayer<K, Entry<V, A>>> Map<K, V, A, S> {
+/// Key prefix is added to the front of all user added keys
+const KEY_PREFIX: [u8; 1] = [1];
+
+/// Meta prefix is added to the front of all housekeeping keys created by the database
+const META_PREFIX: [u8; 1] = [0];
+
+impl<K: Key + Debug, V: Val<A> + Debug, A: Actor> Map<K, V, A> {
     /// Constructs an empty Map
-    pub fn new(storage: S) -> Map<K, V, A, S> {
+    pub fn new(tree: sled::Tree) -> Map<K, V, A> {
         Map {
-            clock: VClock::new(),
-            entries: storage
+            tree: tree,
+            phantom_key: PhantomData,
+            phantom_val: PhantomData,
+            phantom_actor: PhantomData
          }
     }
 
-    /// Returns the number of entries in the Map
-    pub fn len(&self) -> usize {
-        self.entries.len()
+    pub fn key_bytes(&self, key: &K) -> Result<Vec<u8>> {
+        let mut bytes = bincode::serialize(&key)?;
+        bytes.splice(0..0, KEY_PREFIX.iter().cloned());
+        Ok(bytes)
     }
 
-    /// Get a reference to a value stored under a key
-    pub fn get(&self, key: &K) -> Result<Option<&V>> {
-        self.entries.get(&key)
-            ?.map(|map_entry| &map_entry.val)
+    pub fn meta_key_bytes(&self, mut key: Vec<u8>) -> Vec<u8> {
+        key.splice(0..0, META_PREFIX.iter().cloned());
+        key
+    }
+
+    /// Get a value stored under a key
+    pub fn get(&self, key: &K) -> Result<Option<V>> {
+        let key_bytes = self.key_bytes(&key)?;
+
+        let val_opt = if let Some(val_bytes) = self.tree.get(&key_bytes)? {
+            let entry: Entry<V, A> = bincode::deserialize(&val_bytes)?;
+            Some(entry.val)
+        } else {
+            None
+        };
+
+        Ok(val_opt)
     }
 
     /// Update a value under some key, if the key is not present in the map,
@@ -177,11 +222,10 @@ impl<K: Key, V: Val<A>, A: Actor, S: StorageLayer<K, Entry<V, A>>> Map<K, V, A, 
         updater: impl FnOnce(V) -> Option<V::Op>,
         actor: A
     ) -> Result<Op<K, V, A>> {
-        let mut clock = self.clock.clone();
+        let mut clock = self.get_clock()?;
         clock.increment(actor.clone());
 
-        let val_opt = self.entries.get(&key)
-            ?.map(|entry| entry.val.clone());
+        let val_opt = self.get(&key)?;
         let val_exists = val_opt.is_some();
         let val = val_opt.unwrap_or(V::default());
 
@@ -194,16 +238,42 @@ impl<K: Key, V: Val<A>, A: Actor, S: StorageLayer<K, Entry<V, A>>> Map<K, V, A, 
         };
 
         self.apply(&op)?;
-        op
+        Ok(op)
     }
 
     /// Remove an entry from the Map
     pub fn rm(&mut self, key: K, actor: A) -> Result<Op<K, V, A>> {
-        let mut clock = self.clock.clone();
+        let mut clock = self.get_clock()?;
         clock.increment(actor.clone());
         let op = Op::Rm { clock, key };
         self.apply(&op)?;
-        op
+        Ok(op)
+    }
+
+    pub fn iter<'a>(&'a self) -> Iter<'a, K, V, A> {
+        Iter {
+            iter: self.tree.scan(&KEY_PREFIX),
+            phantom_key: PhantomData,
+            phantom_val: PhantomData,
+            phantom_actor: PhantomData
+        }
+    }
+
+    fn get_clock(&self) -> Result<crdts::VClock<A>> {
+        let clock_key = self.meta_key_bytes("clock".as_bytes().to_vec());
+        let clock = if let Some(clock_bytes) = self.tree.get(&clock_key)? {
+            bincode::deserialize(&clock_bytes)?
+        } else {
+            VClock::new()
+        };
+        Ok(clock)
+    }
+
+    fn put_clock(&self, clock: VClock<A>) -> Result<()> {
+        let clock_key = self.meta_key_bytes("clock".as_bytes().to_vec());
+        let clock_bytes = bincode::serialize(&clock)?;
+        self.tree.set(clock_key, clock_bytes)?;
+        Ok(())
     }
 }
 
@@ -213,90 +283,22 @@ mod tests {
 
     use quickcheck::{Arbitrary, Gen, TestResult};
 
-    use lwwreg::LWWReg;
+    use crdts::lwwreg::LWWReg;
 
     type TActor = u8;
     type TKey = u8;
     type TVal = LWWReg<u8, (u64, TActor)>;
-    type TOp = Op<TKey, Map<TKey, TVal, TActor>, TActor>;
-    type TMap =  Map<TKey, crdts::Map<TKey, TVal, TActor>, TActor, MemoryMap<TKey, Entry<TVal, TActor>>>;
+    type InnerMap = crdts::Map<TKey, TVal, TActor>;
+    type TOp = Op<TKey, crdts::Map<TKey, TVal, TActor>, TActor>;
+    type TMap =  Map<TKey, InnerMap, TActor>;
 
     // We can't impl on types outside this module ie. '(u8, Vec<_>)' so we wrap.
     #[derive(Debug, Clone)]
     struct OpVec(TActor, Vec<TOp>);
 
-    impl<K, V, A> Arbitrary for Op<K, V, A> where
-        K: Key + Arbitrary,
-        V: Val<A> + Arbitrary,
-        A: Actor + Arbitrary,
-        V::Op: Arbitrary
-    {
-        fn arbitrary<G: Gen>(_g: &mut G) -> Self {
-            /// we don't generate arbitrary Op's in isolation
-            /// since they are highly likely to conflict with
-            /// other ops, insted we generate OpVec's.
-            unimplemented!();
-        }
-
-        fn shrink(&self) -> Box<Iterator<Item = Op<K, V, A>>> {
-            let mut shrunk: Vec<Op<K, V, A>> = Vec::new();
-
-            match self.clone() {
-                Op::Nop => {/* shrink to nothing */},
-                Op::Rm { clock, key } => {
-                    shrunk.extend(
-                        clock.shrink()
-                            .map(|c| Op::Rm {
-                                clock: c,
-                                key: key.clone()
-                            })
-                            .collect::<Vec<Self>>()
-                    );
-
-                    shrunk.extend(
-                        key.shrink()
-                            .map(|k| Op::Rm {
-                                clock: clock.clone(),
-                                key: k.clone()
-                            })
-                            .collect::<Vec<Self>>()
-                    );
-
-                    shrunk.push(Op::Nop);
-                },
-                Op::Up { clock, key, op } => {
-                    shrunk.extend(
-                        clock.shrink()
-                            .map(|c| Op::Up {
-                                clock: c,
-                                key: key.clone(),
-                                op: op.clone()
-                            })
-                            .collect::<Vec<Self>>()
-                    );
-                    shrunk.extend(
-                        key.shrink()
-                            .map(|k| Op::Up {
-                                clock: clock.clone(),
-                                key: k,
-                                op: op.clone() })
-                            .collect::<Vec<Self>>()
-                    );
-                    shrunk.extend(
-                        op.shrink()
-                            .map(|o| Op::Up {
-                                clock: clock.clone(),
-                                key: key.clone(),
-                                op: o
-                            })
-                            .collect::<Vec<Self>>()
-                    );
-                    shrunk.push(Op::Nop);
-                }
-            }
-
-            Box::new(shrunk.into_iter())
-        }
+    fn mk_tree() -> sled::Tree {
+        let config = sled::ConfigBuilder::new().temporary(true).build();
+        sled::Tree::start(config).unwrap()
     }
 
     impl Arbitrary for OpVec {
@@ -304,7 +306,7 @@ mod tests {
             let actor = TActor::arbitrary(g);
             let num_ops: u8 = g.gen_range(0, 50);
 
-            let mut map = TMap::new(MemoryMap(BTreeMap::new()));
+            let mut map = TMap::new(mk_tree());
             let mut ops = Vec::with_capacity(num_ops as usize);
             for _ in 0..num_ops {
                 let die_roll: u8 = g.gen();
@@ -366,42 +368,19 @@ mod tests {
                 vec.remove(i);
                 shrunk.push(OpVec(self.0.clone(), vec))
             }
-
-            for i in 0..self.1.len() {
-                for shrunk_op in self.1[i].shrink() {
-                    let mut vec = self.1.clone();
-                    vec[i] = shrunk_op;
-                    shrunk.push(OpVec(self.0, vec));
-                }
-            }
             Box::new(shrunk.into_iter())
         }
     }
 
     #[test]
     fn test_new() {
-        let m: TMap = Map::new(MemoryMap(BTreeMap::new()));
-        assert_eq!(m.len(), 0);
-    }
-
-    #[test]
-    fn test_get() {
-        let mut m: TMap = Map::new(MemoryMap(BTreeMap::new()));
-
+        let m: TMap = Map::new(mk_tree());
         assert_eq!(m.get(&0).unwrap(), None);
-
-        m.clock.increment(1);
-        m.entries.put(0, Entry {
-            clock: m.clock.clone(),
-            val: Map::default()
-        }).unwrap();
-
-        assert_eq!(m.get(&0), Some(&Map::new()));
     }
 
     #[test]
     fn test_update() {
-        let mut m: TMap = Map::new(MemoryMap(BTreeMap::new()));
+        let mut m: TMap = Map::new(mk_tree());
 
         // constructs a default value if does not exist
         m.update(
@@ -418,7 +397,7 @@ mod tests {
         ).unwrap();
 
         assert_eq!(
-            m.get(&101).unwrap().get(&110),
+            m.get(&101).unwrap().unwrap().get(&110),
             Some(&LWWReg { val: 2, dot: (1, 1) })
         );
 
@@ -438,34 +417,45 @@ mod tests {
         ).unwrap();
 
         assert_eq!(
-            m.get(&101).unwrap().get(&110),
+            m.get(&101).unwrap().unwrap().get(&110),
             Some(&LWWReg { val: 6, dot: (2, 1) })
         );
 
         // Returning None from the closure should remove the element
         m.update(101, |_| None, 1).unwrap();
 
-        assert_eq!(m.get(&101), None);
+        assert_matches!(m.get(&101), Ok(None));
+    }
+
+    #[test]
+    fn test_key_bytes() {
+        let m: TMap = Map::new(mk_tree());
+        let bytes = m.key_bytes(&101).unwrap();
+
+        assert_eq!(bytes, vec![KEY_PREFIX[0], 101]);
+                   
+        let meta_bytes = m.meta_key_bytes(vec![101]);
+
+        assert_eq!(meta_bytes, vec![META_PREFIX[0], 101]);
     }
 
     #[test]
     fn test_remove() {
-        let mut m: TMap = Map::new(MemoryMap(BTreeMap::new()));
+        let mut m: TMap = Map::new(mk_tree());
 
         m.update(101, |mut m| Some(m.update(110, |r| Some(r), 1)), 1).unwrap();
-        let mut inner_map = crdts::Map::new(MemoryMap(BTreeMap::new()));
-        inner_map.update(110, |r| Some(r), 1).unwrap();
-        assert_eq!(m.get(&101).unwrap(), Some(&inner_map));
-        assert_eq!(m.len(), 1);
+
+        let mut inner_map: InnerMap = crdts::Map::new();
+        inner_map.update(110, |r| Some(r), 1);
+        assert_eq!(m.get(&101).unwrap(), Some(inner_map));
 
         m.rm(101, 1).unwrap();
         assert_eq!(m.get(&101).unwrap(), None);
-        assert_eq!(m.len(), 0);
     }
 
     #[test]
     fn test_reset_remove_semantics() {
-        let mut m1 = TMap::new(MemoryMap(BTreeMap::new()));
+        let mut m1 = TMap::new(mk_tree());
         let m1_op1 = m1.update(
             101,
             |mut map| {
@@ -482,8 +472,8 @@ mod tests {
             74
         ).unwrap();
 
-        let mut m2 = TMap::new(MemoryMap(BTreeMap::new()));
-        m2.apply(&op1).unwrap();
+        let mut m2 = TMap::new(mk_tree());
+        m2.apply(&m1_op1).unwrap();
 
         let m1_op2 = m1.rm(101, 74).unwrap();
 
@@ -506,17 +496,15 @@ mod tests {
         m1.apply(&m2_op1).unwrap();
         m2.apply(&m1_op2).unwrap();
 
-        assert_eq!(m1, m2);
-
         let inner_map = m1.get(&101).unwrap().unwrap();
-        assert_matches!(inner_map.get(&220), Ok(Some(&LWWReg { val: 5, dot: (0, 37) })));
-        assert_matches!(inner_map.get(&110), Ok(None));
+        assert_matches!(inner_map.get(&220), Some(&LWWReg { val: 5, dot: (0, 37) }));
+        assert_matches!(inner_map.get(&110), None);
         assert_eq!(inner_map.len(), 1);
     }
 
     #[test]
     fn test_updating_with_current_clock_should_be_a_nop() {
-        let mut m1: TMap = Map::new(MemoryMap(BTreeMap::new()));
+        let mut m1 = TMap::new(mk_tree());
 
         let res = m1.apply(&Op::Up {
             clock: VClock::new(),
@@ -529,44 +517,40 @@ mod tests {
                     dot: (0, 0)
                 }
             }
-        }).unwrap();
+        });
 
         assert!(res.is_ok());
-
-        // the update should have been ignored
-        assert_eq!(m1, Map::new());
+        assert_eq!(m1.get(&0).unwrap(), None);
     }
 
     #[test]
-    fn test_concurrent_update_and_remove() {
-        let mut m1 = TMap::new(MemoryMap(BTreeMap::new()));
-        let mut m2 = TMap::new(MemoryMap(BTreeMap::new()));
+    fn test_concurrent_add_and_remove_biases_towards_add() {
+        let mut m1 = TMap::new(mk_tree());
+        let mut m2 = TMap::new(mk_tree());
 
         let op1 = m1.rm(102, 75).unwrap();
-        // TAI: try with an update instead of a Nop
-        let op2 = m2.update(102, |_| Some(Op::Nop), 61).unwrap();
+        let op2 = m2.update(102, |_| Some(crdts::map::Op::Nop), 61).unwrap();
 
         assert!(m1.apply(&op2).is_ok());
         assert!(m2.apply(&op1).is_ok());
 
-        assert_eq!(m1, m2);
-
         // we bias towards adds
-        assert!(m1.get(&102).is_some());
+        assert_matches!(m1.get(&102).unwrap(), Some(_));
     }
 
     #[test]
     fn test_order_of_remove_and_update_does_not_matter() {
-        let mut m1 = TMap::new(MemoryMap(BTreeMap::new()));
-        let mut m2 = TMap::new(MemoryMap(BTreeMap::new()));
+        let mut m1 = TMap::new(mk_tree());
+        let mut m2 = TMap::new(mk_tree());
 
-        let op1 = m1.update(0, |_| Some(Op::Nop), 35).unwrap();
+        let op1 = m1.update(0, |_| Some(crdts::map::Op::Nop), 35).unwrap();
         let op2 = m2.rm(1, 47).unwrap();
 
         assert!(m1.apply(&op2).is_ok());
         assert!(m2.apply(&op1).is_ok());
 
-        assert_eq!(m1, m2);
+        assert_eq!(m1.get(&0).unwrap(), m2.get(&0).unwrap());
+        assert_eq!(m1.get(&1).unwrap(), m2.get(&1).unwrap());
     }
 
     fn apply_ops(map: &mut TMap, ops: &[TOp]) {
@@ -581,8 +565,8 @@ mod tests {
                 return TestResult::discard();
             }
 
-            let mut m1: TMap = Map::new(MemoryMap(BTreeMap::new()));
-            let mut m2: TMap = Map::new(MemoryMap(BTreeMap::new()));
+            let mut m1: TMap = Map::new(mk_tree());
+            let mut m2: TMap = Map::new(mk_tree());
 
             apply_ops(&mut m1, &ops1.1);
             apply_ops(&mut m2, &ops2.1);
@@ -590,17 +574,17 @@ mod tests {
             apply_ops(&mut m1, &ops2.1);
             apply_ops(&mut m2, &ops1.1);
 
-            TestResult::from_bool(m1 == m2)
-        }
+            let m1_state: Vec<(u8, InnerMap)> = m1
+                .iter()
+                .map(|v| v.unwrap())
+                .collect();
+            let m2_state: Vec<(u8, InnerMap)> = m2
+                .iter()
+                .map(|v| v.unwrap())
+                .collect();
 
-        fn prop_truncate_with_empty_vclock_is_nop(ops: OpVec) -> bool {
-            let mut m: TMap = Map::new(MemoryMap(BTreeMap::new()));
-            apply_ops(&mut m, &ops.1);
-
-            let m_snapshot = m.clone();
-            m.truncate(&VClock::new());
-
-            m == m_snapshot
+            assert_eq!(m1_state, m2_state);
+            TestResult::from_bool(true)
         }
 
         fn prop_associative(
@@ -612,8 +596,8 @@ mod tests {
                 return TestResult::discard();
             }
 
-            let mut m1: TMap = Map::new();
-            let mut m2: TMap = Map::new();
+            let mut m1: TMap = Map::new(mk_tree());
+            let mut m2: TMap = Map::new(mk_tree());
 
             apply_ops(&mut m1, &ops1.1);
             apply_ops(&mut m2, &ops2.1);
@@ -625,22 +609,43 @@ mod tests {
 
             // m1 ^ (m2 ^ m3)
             apply_ops(&mut m2, &ops3.1);
-            apply_ops(&mut m3, &ops1.1);
+            apply_ops(&mut m2, &ops1.1);
 
             // (m1 ^ m2) ^ m3 = m1 ^ (m2 ^ m3)
-            TestResult::from_bool(m1 == m2)
+            let m1_state: Vec<(u8, InnerMap)> = m1
+                .iter()
+                .map(|v| v.unwrap())
+                .collect();
+            let m2_state: Vec<(u8, InnerMap)> = m2
+                .iter()
+                .map(|v| v.unwrap())
+                .collect();
+
+            assert_eq!(m1_state, m2_state);
+            TestResult::from_bool(true)
         }
 
         fn prop_idempotent(ops: OpVec) -> bool {
-            let mut m: TMap = Map::new(MemoryMap(BTreeMap::new()));
-            let mut m_clone: TMap = Map::new(MemoryMap(BTreeMap::new()));
+            let mut m: TMap = Map::new(mk_tree());
+            let mut m_clone: TMap = Map::new(mk_tree());
             apply_ops(&mut m, &ops.1);
             apply_ops(&mut m_clone, &ops.1);
 
             apply_ops(&mut m, &ops.1); // apply ops once more
 
             // m ^ m = m
-            m == m_clone
+            let m_state: Vec<(u8, InnerMap)> = m
+                .iter()
+                .map(|v| v.unwrap())
+                .collect();
+
+            let m_clone_state: Vec<(u8, InnerMap)> = m_clone
+                .iter()
+                .map(|v| v.unwrap())
+                .collect();
+
+            assert_eq!(m_state, m_clone_state);
+            true
         }
     }
 }

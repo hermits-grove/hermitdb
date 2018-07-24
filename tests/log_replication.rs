@@ -252,7 +252,7 @@ quickcheck! {
 
     fn prop_log_preserves_order_memory(ops: OpVec) -> bool {
         let log: MemoryLog<u8, TMap> = MemoryLog::new(ops.0);
-        log_preserves_order(log, ops);
+        log_preserves_order(log, ops.1);
         true
     }
 
@@ -263,7 +263,7 @@ quickcheck! {
         let log_path_string = log_path.to_str().unwrap().to_string();
         let log = GitLog::no_auth(ops.0, log_git, "log".into(), log_path_string);;
         
-        log_preserves_order(log, ops);
+        log_preserves_order(log, ops.1);
 
         true
     }
@@ -287,8 +287,8 @@ fn test_quickcheck_1() {
     };
     assert_matches!(b_log.commit(op), Ok(()));
     let tagged_op = b_log.next().unwrap().unwrap();
-    b_map.apply(tagged_op.op());
-    b_log.ack(&tagged_op);
+    assert_matches!(b_map.apply(tagged_op.op()), Ok(()));
+    assert_matches!(b_log.ack(&tagged_op), Ok(()));
 
     assert_matches!(b_log.pull(&a_log), Ok(()));
     assert_matches!(a_log.pull(&b_log), Ok(()));
@@ -323,8 +323,9 @@ fn test_quickcheck_2() {
     };
     assert_matches!(b_log.commit(op), Ok(()));
     let tagged_op = b_log.next().unwrap().unwrap();
-    b_map.apply(tagged_op.op());
-    b_log.ack(&tagged_op);
+    
+    assert_matches!(b_map.apply(tagged_op.op()), Ok(()));
+    assert_matches!(b_log.ack(&tagged_op), Ok(()));
 
     assert_matches!(b_log.pull(&a_log), Ok(()));
     assert_matches!(a_log.pull(&b_log), Ok(()));
@@ -373,8 +374,8 @@ fn test_quickcheck_3() {
     assert_matches!(b_log.commit(op), Ok(()));
     assert_eq!(b_log.next().unwrap().unwrap().op(), &map::Op::Nop);
     let tagged_op = b_log.next().unwrap().unwrap();
-    b_map.apply(tagged_op.op());
-    b_log.ack(&tagged_op);
+    assert_matches!(b_map.apply(tagged_op.op()), Ok(()));
+    assert_matches!(b_log.ack(&tagged_op), Ok(()));
 
     assert_matches!(b_log.pull(&a_log), Ok(()));
     assert_matches!(a_log.pull(&b_log), Ok(()));

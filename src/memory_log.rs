@@ -1,23 +1,24 @@
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 
 use crdts::{CmRDT, Actor};
 use log::{TaggedOp, LogReplicable};
 use error::Result;
 
 #[derive(Debug, Clone)]
-pub struct MemoryLog<A: Actor, C: CmRDT> {
+pub struct MemoryLog<A: Actor, C: Debug + CmRDT> {
     actor: A,
     logs: BTreeMap<A, (u64, Vec<C::Op>)>
 }
 
 #[derive(Debug, Clone)]
-pub struct MemoryOp<A: Actor, C: CmRDT> {
+pub struct MemoryOp<A: Actor, C: Debug + CmRDT> {
     actor: A,
     index: u64,
     op: C::Op
 }
 
-impl<A: Actor, C: CmRDT> TaggedOp<C> for MemoryOp<A, C> {
+impl<A: Actor, C: Debug + CmRDT> TaggedOp<C> for MemoryOp<A, C> {
     type ID = (A, u64);
 
     fn id(&self) -> Self::ID {
@@ -29,7 +30,7 @@ impl<A: Actor, C: CmRDT> TaggedOp<C> for MemoryOp<A, C> {
     }
 }
 
-impl<A: Actor, C: CmRDT> LogReplicable<A, C> for MemoryLog<A, C> {
+impl<A: Actor, C: Debug + CmRDT> LogReplicable<A, C> for MemoryLog<A, C> {
     type Op = MemoryOp<A, C>;
 
     fn next(&self) -> Result<Option<Self::Op>> {
@@ -90,7 +91,7 @@ impl<A: Actor, C: CmRDT> LogReplicable<A, C> for MemoryLog<A, C> {
     }
 }
 
-impl<A: Actor, C: CmRDT> MemoryLog<A, C> {
+impl<A: Actor, C: Debug + CmRDT> MemoryLog<A, C> {
     pub fn new(actor: A) -> Self {
         MemoryLog {
             actor: actor,
