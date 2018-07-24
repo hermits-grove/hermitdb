@@ -178,6 +178,19 @@ fn all_replication_strategies_converge<L: LogReplicable<TActor, TMap>>(
     assert_eq!(pull_map, central_map);
 }
 
+fn log_preserves_order(mut log: impl LogReplicable<TActor, TMap>, ops: Vec<TOp>) {
+    for op in ops.iter() {
+        assert_matches!(log.commit(op.clone()), Ok(()));
+    }
+
+    for op in ops.iter() {
+        let tagged_op = log.next().unwrap().unwrap();
+        assert_eq!(op, tagged_op.op());
+        log.ack(&tagged_op).unwrap();
+    }
+    assert_matches!(log.next(), Ok(None));
+}
+
 quickcheck! {
     fn prop_replication_strategies_converges_memory(a_ops: OpVec, b_ops: OpVec) -> TestResult {
         let (actor1, a_ops) = (a_ops.0, a_ops.1);
@@ -238,39 +251,22 @@ quickcheck! {
     }
 
     fn prop_log_preserves_order_memory(ops: OpVec) -> bool {
-        let mut log: MemoryLog<u8, TMap> = MemoryLog::new(ops.0);
-
-        for op in ops.1.iter() {
-            log.commit(op.clone()).unwrap();
-        }
-        for op in ops.1.iter() {
-            let tagged_op = log.next().unwrap().unwrap();
-            assert_eq!(op, tagged_op.op());
-            log.ack(&tagged_op).unwrap();
-        }
-
+        let log: MemoryLog<u8, TMap> = MemoryLog::new(ops.0);
+        log_preserves_order(log, ops);
         true
     }
 
     fn prop_log_preserves_order_git(ops: OpVec) -> bool {
         let log_dir = tempfile::tempdir().unwrap();
-        let log_git = gitdb::git2::Repository::init_bare(&log_dir.path()).unwrap();
+        let log_path = log_dir.path();
+        let log_git = gitdb::git2::Repository::init_bare(&log_path).unwrap();
+        let log_path_string = log_path.to_str().unwrap().to_string();
+        let log = GitLog::no_auth(ops.0, log_git, "log".into(), log_path_string);;
         
-        let mut log: GitLog<u8, TMap> = GitLog::no_auth(ops.0, log_git, "log".into(), log_dir.path().to_str().unwrap().to_string());;
-
-        for op in ops.1.iter() {
-            log.commit(op.clone()).unwrap();
-        }
-        for op in ops.1.iter() {
-            let tagged_op = log.next().unwrap().unwrap();
-            assert_eq!(op, tagged_op.op());
-            log.ack(&tagged_op).unwrap();
-        }
+        log_preserves_order(log, ops);
 
         true
     }
-
-    
 }
 
 #[test]
