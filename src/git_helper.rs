@@ -1,8 +1,4 @@
-extern crate time;
 extern crate git2;
-extern crate rmp_serde;
-extern crate ditto;
-extern crate ring;
 
 use self::git2::{Repository, Commit};
 
@@ -12,25 +8,31 @@ use error::{Result, Error};
 use remote::Remote;
 
 pub fn fetch<'a>(repo: &'a Repository, remote: &Remote) -> Result<git2::Remote<'a>> {
-    println!("fetching remote {}", &remote.name());
+    eprintln!("fetching remote: {}", &remote.name);
 
-    let mut git_remote = match repo.find_remote(&remote.name()) {
+    eprintln!("searching for existing remote in repo");
+    let mut git_remote = match repo.find_remote(&remote.name) {
         Ok(git_remote) => git_remote,
-        Err(e) => {
-            println!("find_remote failed: {:?}", e);
+        Err(_) => {
+            eprintln!("Failed to find remote '{}', adding remote to git", remote.name);
             // this remote is not added to git yet, we add it
-            repo.remote(&remote.name(), &remote.url())?
+            repo.remote(&remote.name, &remote.url)?
         }
     };
 
+    eprintln!("found a remote, starting fetch...");
+    
     let mut fetch_opt = git2::FetchOptions::new();
     fetch_opt.remote_callbacks(remote.git_callbacks());
     git_remote.fetch(&["master"], Some(&mut fetch_opt), None)?;
+
+    eprintln!("finished fetch");
+
     Ok(git_remote)
 }
 
 pub fn commit(repo: &Repository, msg: &str, extra_parents: &[&Commit]) -> Result<()> {
-    println!("committing");
+    eprintln!("committing");
 
     let mut index = repo.index()?;
     let tree = index.write_tree()
@@ -51,13 +53,13 @@ pub fn commit(repo: &Repository, msg: &str, extra_parents: &[&Commit]) -> Result
             let prev_tree = commit.tree()?;
             let stats = repo.diff_tree_to_tree(Some(&tree), Some(&prev_tree), None)?.stats()?;
             if stats.files_changed() == 0 {
-                println!("aborting commit, no files changed");
+                eprintln!("aborting commit, no files changed");
                 return Ok(())
             }
         },
         None => {
             if index.is_empty() {
-                println!("aborting commit, Index is empty, nothing to commit");
+                eprintln!("aborting commit, Index is empty, nothing to commit");
                 return Ok(());
             }
         }
@@ -82,8 +84,15 @@ pub fn stage_file(repo: &Repository, file: &Path) -> Result<()> {
     Ok(())
 }
 
+pub fn stage_globs(repo: &Repository, globs: &[&str]) -> Result<()> {
+    let mut index = repo.index()?;
+    index.add_all(globs, git2::IndexAddOption::DEFAULT, None)?;
+    index.write()?;
+    Ok(())
+}
+
 pub fn fast_forward(repo: &Repository, branch: &git2::Branch) -> Result<()> {
-    println!("fast forwarding repository to match branch {:?}", branch.name()?);
+    eprintln!("fast forwarding repository to match branch {:?}", branch.name()?);
     let remote_commit_oid = branch.get().resolve()?.target()
         .ok_or(Error::State("remote ref didn't resolve to commit".into()))?;
 
@@ -93,7 +102,7 @@ pub fn fast_forward(repo: &Repository, branch: &git2::Branch) -> Result<()> {
         let mut branch_ref = &mut branch.into_reference();
         branch_ref.set_target(remote_commit_oid, "fast forward")?;
     } else {
-        println!("creating local master branch");
+        eprintln!("creating local master branch");
         repo.branch("master", &remote_commit, false)?;
     }
     repo.set_head("refs/heads/master")?;
@@ -108,10 +117,10 @@ pub fn sync<'a>(repo: &Repository, remote: &Remote, mut merger: &mut (FnMut(git2
     // fetch and merge
     let mut git_remote = fetch(&repo, &remote)?;
 
-    println!("searching for remote master branch");
-    let remote_master_ref = format!("{}/master", &remote.name());
+    eprintln!("searching for remote master branch");
+    let remote_master_ref = format!("{}/master", &remote.name);
     if let Ok(branch) = repo.find_branch(&remote_master_ref, git2::BranchType::Remote) {
-        println!("found remote master branch");
+        eprintln!("found remote master branch");
         let remote_commit_oid = branch.get().resolve()?.target()
             .ok_or(Error::State("remote ref didn't resolve to commit".into()))?;
 
@@ -129,24 +138,36 @@ pub fn sync<'a>(repo: &Repository, remote: &Remote, mut merger: &mut (FnMut(git2
 
             // TODO: see if there are any diff options we can use to speed up the diff
             let diff = repo.diff_tree_to_index(Some(&remote_tree), None, None)?;
-            println!("iterating foreach");
+            eprintln!("iterating foreach");
             diff.foreach(&mut merger, None, None, None)?;
             commit(&repo, "merge commit", &[&remote_commit])?;
         } else if analysis.contains(MergeAnalysis::ANALYSIS_FASTFORWARD) {
             fast_forward(&repo, &branch)?;
         } else if analysis == git2::MergeAnalysis::ANALYSIS_UP_TO_DATE {
-            println!("nothing to merge, ahead of remote");
+            eprintln!("nothing to merge, ahead of remote");
         } else {
             return Err(Error::State(format!("Bad merge analysis result: {:?}", analysis)));
         }
+    } else {
+        eprintln!("no remote branch: {}", remote.name);
     }
+
+    eprintln!("pushing git_remote");
+
+    eprintln!("just for fun, here are the current references:");
+
+    for reference in repo.references()? {
+        let reference = reference.unwrap();
+        let name = reference.name().unwrap();
+        let target = reference.target().unwrap();
+        eprintln!("ref: {} => {}", name, target);
+    }
+
+    eprintln!("finished printing references");
     
-    println!("pushing git_remote");
     let mut push_opt = git2::PushOptions::new();
     push_opt.remote_callbacks(remote.git_callbacks());
     git_remote.push(&[&"refs/heads/master"], Some(&mut push_opt))?;
-    println!("Finish push");
-    
-    // TAI: should return stats struct
+    eprintln!("Finish push");
     Ok(())
 }

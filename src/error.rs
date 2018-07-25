@@ -1,29 +1,131 @@
 extern crate git2;
-extern crate ditto;
-extern crate rmp_serde;
+extern crate bincode;
 extern crate data_encoding;
+extern crate crdts;
+extern crate sled;
 
-use std;
+use std::{self, fmt};
+use data::Kind;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+// TODO: audit usage of these error types, I have a feeling not all of these are used
 #[derive(Debug)]
 pub enum Error {
     NotFound,
-    BlockTypeConflict,
+    NoRemote,
+    UnexpectedKind(Kind, Kind),
+    DaoField(String),
+    BranchNameEncodingError,
+    BranchIsNotADirectReference,
+    LogCommitDoesNotContainOp,
     Parse(String),
     Crypto(String),
     Version(String),
     State(String),
-    Tree(String),
-    SerdeRMPDecode(rmp_serde::decode::Error),
-    SerdeRMPEncode(rmp_serde::encode::Error),
-    CRDT(ditto::Error),
+    Bincode(bincode::Error),
+    CRDT(crdts::Error),
     Git(git2::Error),
     IO(std::io::Error),
-    DataEncodingDecode(data_encoding::DecodeError)
+    DataEncodingDecode(data_encoding::DecodeError),
+    SledGeneric(sled::Error<()>)
 }
 
+impl fmt::Display for Error {
+    fn fmt(&self, mut f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Error::NotFound =>
+                write!(f, "Key not found"),
+            Error::NoRemote =>
+                write!(f, "No Git remote has been added to the db"),
+            Error::UnexpectedKind(expected, got) =>
+                write!(f, "Unexpected kind! got: {:?}, expected: {:?}", got, expected),
+            Error::BranchNameEncodingError =>
+                write!(f, "A branch name is not utf8 encoded"),
+            Error::BranchIsNotADirectReference =>
+                write!(f, "A branch reference isn't a direct ref to an oid"),
+            Error::LogCommitDoesNotContainOp =>
+                write!(f, "Trees attached to commits in git are expected to have an 'op' entry"),
+            Error::DaoField(s) =>
+                write!(f, "Dao Field error: {}", s),
+            Error::Parse(s) =>
+                write!(f, "Parsing failed: {}", s),
+            Error::Crypto(s) =>
+                write!(f, "Crypto failure: {}", s),
+            Error::Version(s) =>
+                write!(f, "Version failure: {}", s),
+            Error::State(s) =>
+                write!(f, "Gitdb entered a bad state: {}", s),
+            Error::Bincode(e) => e.fmt(&mut f),
+            Error::CRDT(e) => e.fmt(&mut f),
+            Error::Git(e) => e.fmt(&mut f),
+            Error::IO(e) => e.fmt(&mut f),
+            Error::DataEncodingDecode(e) => e.fmt(&mut f),
+            Error::SledGeneric(e) => e.fmt(&mut f)
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn description(&self) -> &str {
+        match self {
+            Error::NotFound => "Key was not found",
+            Error::NoRemote => "No Git remote has been added to the db",
+            Error::UnexpectedKind(_, _) =>
+                "Unexpected kind, were you attempting to convert a Data into something it's not?",
+            Error::BranchNameEncodingError => "A branch name is not utf8 encoded",
+            Error::BranchIsNotADirectReference =>
+                "A branch reference isn't a direct ref to an oid",
+            Error::LogCommitDoesNotContainOp =>
+                "Trees attached to commits in git are expected to have an 'op' entry",
+            Error::DaoField(_) =>
+                "Problem with field while processing Dao request",
+            Error::Parse(_) => "Parsing failed",
+            Error::Crypto(_) => "Crypto failure",
+            Error::Version(_) => "Version failure",
+            Error::State(_) => "Gitdb entered a bad state",
+            Error::Bincode(e) => e.description(),
+            Error::CRDT(e) => e.description(),
+            Error::Git(e) => e.description(),
+            Error::IO(e) => e.description(),
+            Error::DataEncodingDecode(e) => e.description(),
+            Error::SledGeneric(e) => e.description()
+        }
+    }
+    fn cause(&self) -> Option<&std::error::Error> {
+        match self {
+            Error::NotFound => None,
+            Error::NoRemote => None,
+            Error::UnexpectedKind(_, _) => None,
+            Error::BranchNameEncodingError => None,
+            Error::BranchIsNotADirectReference => None,
+            Error::LogCommitDoesNotContainOp => None,
+            Error::DaoField(_) => None,
+            Error::Parse(_) => None,
+            Error::Crypto(_) => None,
+            Error::Version(_) => None,
+            Error::State(_) => None,
+            Error::Bincode(e) => Some(e),
+            Error::CRDT(e) => Some(e),
+            Error::Git(e) => Some(e),
+            Error::IO(e) => Some(e),
+            Error::DataEncodingDecode(e) => Some(e),
+            Error::SledGeneric(e) => Some(e)
+        }
+    }
+}
+
+impl From<crdts::Error> for Error {
+    fn from(err: crdts::Error) -> Self {
+        Error::CRDT(err)
+    }
+}
+
+impl From<sled::Error<()>> for Error {
+    fn from(err: sled::Error<()>) -> Self {
+        Error::SledGeneric(err)
+    }
+}
 
 impl From<git2::Error> for Error {
     fn from(err: git2::Error) -> Self {
@@ -37,15 +139,9 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<rmp_serde::decode::Error> for Error {
-    fn from(err: rmp_serde::decode::Error) -> Self {
-        Error::SerdeRMPDecode(err)
-    }
-}
-
-impl From<rmp_serde::encode::Error> for Error {
-    fn from(err: rmp_serde::encode::Error) -> Self {
-        Error::SerdeRMPEncode(err)
+impl From<bincode::Error> for Error {
+    fn from(err: bincode::Error) -> Self {
+        Error::Bincode(err)
     }
 }
 
