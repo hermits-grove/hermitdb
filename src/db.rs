@@ -1,51 +1,53 @@
-// TODO: rename KEY_FILE to ENTROPY_FILE
-extern crate time;
-extern crate git2;
-extern crate bincode;
-extern crate ring;
-extern crate sled;
-extern crate crdts;
+use crdts::CmRDT;
 
-use self::git2::Repository;
+use error::Result;
+use map;
+use data::{Data, Op, Actor, Kind};
+use log::{TaggedOp, LogReplicable};
 
-use std;
-use std::io::Write;
-use std::path::Path;
+pub type Map = map::Map<(Vec<u8>, Kind), Data, Actor>;
 
-use error::{Result, Error};
-use remote::Remote;
-use git_helper;
-
-pub struct DB {
+pub struct DB<L: LogReplicable<Actor, Map>> {
+    log: L,
+    remote_logs: Vec<L>,
+    map: Map
 }
 
-impl DB {
-    pub fn open(root: &Path) -> Result<DB> {
-        let repo = Repository::open(&root)?;
-
-        let config = sled::ConfigBuilder::new()
-            .path(root)
-            .build();
-        let tree = sled::Tree::start(config)?;
-
-        Ok(DB { repo, tree })
+impl<L: LogReplicable<Actor, Map>> DB<L> {
+    pub fn new(log: L, map: Map) -> Self {
+        DB { log, remote_logs: Vec::new(), map }
     }
 
-    pub fn init(root: &Path) -> Result<DB> {
-        eprintln!("initializing gitdb at {:?}", root);
-        Repository::init(&root)?;
-        DB::open(&root)
+    pub fn get(&self, key: &(Vec<u8>, Kind)) -> Result<Option<Data>> {
+        self.map.get(key)
     }
 
-    pub fn init_from_remote(root: &Path, remote: &Remote) -> Result<DB> {
-        eprintln!("initializing from remote");
-        let empty_repo = Repository::init(&root)?;
-        git_helper::sync(
-            &empty_repo,
-            &remote,
-            &mut |_, _| panic!("I should not be called!")
-        )?;
+    pub fn update<F>(&mut self, key: (Vec<u8>, Kind), actor: Actor, updater: F) -> Result<()>
+        where F: FnOnce(Data) -> Option<Op>
+    {
+        let map_op = self.map.update(key, actor, updater)?;
+        let tagged_op = self.log.commit(map_op)?;
+        self.map.apply(tagged_op.op())?;
+        self.log.ack(&tagged_op)
+    }
 
-        DB::open(&root)
+    pub fn rm(&mut self, key: (Vec<u8>, Kind), actor: Actor) -> Result<()> {
+        let op = self.map.rm(key, actor)?;
+        let tagged_op = self.log.commit(op)?;
+        self.map.apply(tagged_op.op())?;
+        self.log.ack(&tagged_op)
+    }
+
+    pub fn sync(&mut self) -> Result<()> {
+        for mut remote_log in self.remote_logs.iter_mut() {
+            self.log.pull(&remote_log)?;
+            self.log.push(&mut remote_log)?;
+        }
+
+        while let Some(tagged_op) = self.log.next()? {
+            self.map.apply(tagged_op.op())?;
+            self.log.ack(&tagged_op)?;
+        }
+        Ok(())
     }
 }

@@ -1,5 +1,4 @@
 extern crate gitdb;
-extern crate time;
 extern crate tempfile;
 
 #[macro_use]
@@ -12,8 +11,8 @@ use quickcheck::{Arbitrary, Gen, TestResult};
 
 use gitdb::crdts::{map, orswot, Map, Orswot, CmRDT};
 use gitdb::{LogReplicable, TaggedOp};
-use gitdb::memory_log::MemoryLog;
-use gitdb::git_log::GitLog;
+use gitdb::memory_log;
+use gitdb::git_log;
 
 type TActor = u8;
 type TKey = u8;
@@ -36,7 +35,7 @@ impl Arbitrary for OpVec {
             let op = match die_roll % 3 {
                 0 => {
                     // update Orswot
-                    map.update(key, |mut set| {
+                    map.update(key, actor.clone(), |mut set| {
                         let die_roll: u8 = g.gen();
                         let member = g.gen();
                         match die_roll % 3 {
@@ -55,7 +54,7 @@ impl Arbitrary for OpVec {
                                 None
                             }
                         }
-                    }, actor.clone())
+                    })
                 },
                 1 => {
                     // rm
@@ -92,15 +91,13 @@ fn p2p_pull_converge<L: LogReplicable<TActor, TMap>>(
     let mut b_map = TMap::new();
 
     for op in a_ops {
-        assert_matches!(a_log.commit(op), Ok(()));
-        let tagged_op = a_log.next().unwrap().unwrap();
+        let tagged_op = a_log.commit(op).unwrap();
         assert_matches!(a_map.apply(tagged_op.op()), Ok(()));
         assert_matches!(a_log.ack(&tagged_op), Ok(()));
     }
 
     for op in b_ops {
-        assert_matches!(b_log.commit(op), Ok(()));
-        let tagged_op = b_log.next().unwrap().unwrap();
+        let tagged_op = b_log.commit(op).unwrap();
         assert_eq!(b_map.apply(tagged_op.op()), Ok(()));
         assert_matches!(b_log.ack(&tagged_op), Ok(()));
     }
@@ -133,15 +130,13 @@ fn centralized_converge<L: LogReplicable<TActor, TMap>>(
     let mut b_map = TMap::new();
 
     for op in a_ops {
-        assert_matches!(a_log.commit(op), Ok(()));
-        let tagged_op = a_log.next().unwrap().unwrap();
+        let tagged_op = a_log.commit(op).unwrap();
         assert_matches!(a_map.apply(tagged_op.op()), Ok(()));
         assert_matches!(a_log.ack(&tagged_op), Ok(()));
     }
 
     for op in b_ops {
-        assert_matches!(b_log.commit(op), Ok(()));
-        let tagged_op = b_log.next().unwrap().unwrap();
+        let tagged_op = b_log.commit(op).unwrap();
         assert_eq!(b_map.apply(tagged_op.op()), Ok(()));
         assert_matches!(b_log.ack(&tagged_op), Ok(()));
     }
@@ -180,7 +175,7 @@ fn all_replication_strategies_converge<L: LogReplicable<TActor, TMap>>(
 
 fn log_preserves_order(mut log: impl LogReplicable<TActor, TMap>, ops: Vec<TOp>) {
     for op in ops.iter() {
-        assert_matches!(log.commit(op.clone()), Ok(()));
+        assert_matches!(log.commit(op.clone()), Ok(_));
     }
 
     for op in ops.iter() {
@@ -200,13 +195,13 @@ quickcheck! {
             return TestResult::discard();
         }
 
-        let a_pull = MemoryLog::new(actor1);
-        let b_pull = MemoryLog::new(actor2);
-        let a_central = MemoryLog::new(actor1);
-        let b_central = MemoryLog::new(actor2);
+        let a_pull = memory_log::Log::new(actor1);
+        let b_pull = memory_log::Log::new(actor2);
+        let a_central = memory_log::Log::new(actor1);
+        let b_central = memory_log::Log::new(actor2);
 
         // TAI: to avoid this dummy actor, consider moving the actor to the trait functions that require an actor.
-        let c_central = MemoryLog::new(0); // this actor shouldn't matter
+        let c_central = memory_log::Log::new(0); // this actor shouldn't matter
         
         all_replication_strategies_converge(
             a_pull, b_pull,
@@ -236,11 +231,11 @@ quickcheck! {
         let b_central_git = gitdb::git2::Repository::init_bare(&b_central_dir.path()).unwrap();
         let c_central_git = gitdb::git2::Repository::init_bare(&c_central_dir.path()).unwrap();
         
-        let a_pull = GitLog::no_auth(actor1, a_pull_git, "a_pull".into(), a_pull_dir.path().to_str().unwrap().to_string());
-        let b_pull = GitLog::no_auth(actor2, b_pull_git, "b_pull".into(), b_pull_dir.path().to_str().unwrap().to_string());
-        let a_central = GitLog::no_auth(actor1, a_central_git, "a_central".into(), a_central_dir.path().to_str().unwrap().to_string());
-        let b_central = GitLog::no_auth(actor2, b_central_git, "b_central".into(), b_central_dir.path().to_str().unwrap().to_string());
-        let c_central = GitLog::no_auth(0, c_central_git, "c_central".into(), c_central_dir.path().to_str().unwrap().to_string());
+        let a_pull = git_log::Log::no_auth(actor1, a_pull_git, "a_pull".into(), a_pull_dir.path().to_str().unwrap().to_string());
+        let b_pull = git_log::Log::no_auth(actor2, b_pull_git, "b_pull".into(), b_pull_dir.path().to_str().unwrap().to_string());
+        let a_central = git_log::Log::no_auth(actor1, a_central_git, "a_central".into(), a_central_dir.path().to_str().unwrap().to_string());
+        let b_central = git_log::Log::no_auth(actor2, b_central_git, "b_central".into(), b_central_dir.path().to_str().unwrap().to_string());
+        let c_central = git_log::Log::no_auth(0, c_central_git, "c_central".into(), c_central_dir.path().to_str().unwrap().to_string());
         
         all_replication_strategies_converge(
             a_pull, b_pull,
@@ -251,7 +246,7 @@ quickcheck! {
     }
 
     fn prop_log_preserves_order_memory(ops: OpVec) -> bool {
-        let log: MemoryLog<u8, TMap> = MemoryLog::new(ops.0);
+        let log: memory_log::Log<u8, TMap> = memory_log::Log::new(ops.0);
         log_preserves_order(log, ops.1);
         true
     }
@@ -261,7 +256,7 @@ quickcheck! {
         let log_path = log_dir.path();
         let log_git = gitdb::git2::Repository::init_bare(&log_path).unwrap();
         let log_path_string = log_path.to_str().unwrap().to_string();
-        let log = GitLog::no_auth(ops.0, log_git, "log".into(), log_path_string);;
+        let log = git_log::Log::no_auth(ops.0, log_git, "log".into(), log_path_string);;
         
         log_preserves_order(log, ops.1);
 
@@ -272,8 +267,8 @@ quickcheck! {
 #[test]
 fn test_quickcheck_1() {
     // (OpVec(89, []), OpVec(51, [Up { clock: VClock { dots: {51: 5} }, key: 3, op: Rm { clock: VClock { dots: {} }, member: 21 } }])
-    let mut a_log: MemoryLog<u8, TMap> = MemoryLog::new(89);
-    let mut b_log: MemoryLog<u8, TMap> = MemoryLog::new(51);
+    let mut a_log: memory_log::Log<u8, TMap> = memory_log::Log::new(89);
+    let mut b_log: memory_log::Log<u8, TMap> = memory_log::Log::new(51);
     let mut a_map = TMap::new();
     let mut b_map = TMap::new();
 
@@ -285,8 +280,7 @@ fn test_quickcheck_1() {
             member: 21
         }
     };
-    assert_matches!(b_log.commit(op), Ok(()));
-    let tagged_op = b_log.next().unwrap().unwrap();
+    let tagged_op = b_log.commit(op).unwrap();
     assert_matches!(b_map.apply(tagged_op.op()), Ok(()));
     assert_matches!(b_log.ack(&tagged_op), Ok(()));
 
@@ -312,8 +306,8 @@ fn test_quickcheck_2() {
     //  left: Map { clock: VClock { dots: {44: 17} }, entries: {} }
     // right: Map { clock: VClock { dots: {} }, entries: {} }
 
-    let mut a_log: MemoryLog<u8, TMap> = MemoryLog::new(89);
-    let mut b_log: MemoryLog<u8, TMap> = MemoryLog::new(51);
+    let mut a_log: memory_log::Log<u8, TMap> = memory_log::Log::new(89);
+    let mut b_log: memory_log::Log<u8, TMap> = memory_log::Log::new(51);
     let mut a_map = TMap::new();
     let mut b_map = TMap::new();
 
@@ -321,8 +315,7 @@ fn test_quickcheck_2() {
         clock: vec![(44, 17)].into_iter().collect(),
         key: 196
     };
-    assert_matches!(b_log.commit(op), Ok(()));
-    let tagged_op = b_log.next().unwrap().unwrap();
+    let tagged_op = b_log.commit(op).unwrap();
     
     assert_matches!(b_map.apply(tagged_op.op()), Ok(()));
     assert_matches!(b_log.ack(&tagged_op), Ok(()));
@@ -363,15 +356,15 @@ fn test_quickcheck_3() {
 
     let actor1 = 1;
     let actor2 = 2;
-    let mut a_log: GitLog<TActor, TMap> = GitLog::no_auth(actor1, a_log_git, "a_log".into(), a_log_path.to_str().unwrap().to_string());
-    let mut b_log: GitLog<TActor, TMap> = GitLog::no_auth(actor2, b_log_git, "b_log".into(), b_log_path.to_str().unwrap().to_string());
+    let mut a_log: git_log::Log<TActor, TMap> = git_log::Log::no_auth(actor1, a_log_git, "a_log".into(), a_log_path.to_str().unwrap().to_string());
+    let mut b_log: git_log::Log<TActor, TMap> = git_log::Log::no_auth(actor2, b_log_git, "b_log".into(), b_log_path.to_str().unwrap().to_string());
 
     let mut a_map = TMap::new();
     let mut b_map = TMap::new();
 
     let op: TOp = map::Op::Nop;
 
-    assert_matches!(b_log.commit(op), Ok(()));
+    assert_matches!(b_log.commit(op), Ok(_));
     assert_eq!(b_log.next().unwrap().unwrap().op(), &map::Op::Nop);
     let tagged_op = b_log.next().unwrap().unwrap();
     assert_matches!(b_map.apply(tagged_op.op()), Ok(()));

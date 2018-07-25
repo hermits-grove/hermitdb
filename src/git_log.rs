@@ -21,7 +21,7 @@ pub struct Auth {
     pass: String
 }
 
-pub struct GitLog<A: Actor, C: Debug + CmRDT>
+pub struct Log<A: Actor, C: Debug + CmRDT>
     where C::Op : DeserializeOwned + Serialize + Eq
 {
     actor: A,
@@ -38,7 +38,7 @@ pub struct Op<A: Actor, C: Debug + CmRDT + Eq>
     where C::Op : DeserializeOwned + Serialize + Eq
 {
     actor: A,
-    oid: Vec<u8>,
+    oid: Vec<u8>, // the object id of the commit with this op
     op: C::Op
 }
 
@@ -131,9 +131,9 @@ impl<A: Actor, C: Debug + CmRDT + Eq> Op<A, C>
 }
 
 
-impl<A, C> LogReplicable<A, C> for GitLog<A, C> where
+impl<A, C> LogReplicable<A, C> for Log<A, C> where
     A: Actor + FromStr + ToString + Debug,
-    C: Debug + CmRDT + Eq + Serialize + DeserializeOwned, // NOT SURE WHY I NEED SERDE BOUNDS ON `C`
+    C: Debug + CmRDT + Eq + Serialize + DeserializeOwned, // TODO: why are serde bounds on `C` needed?
     C::Op : DeserializeOwned + Serialize + Eq
 {
     type Op = Op<A, C>;
@@ -217,7 +217,7 @@ impl<A, C> LogReplicable<A, C> for GitLog<A, C> where
         Ok(())
     }
 
-    fn commit(&mut self, op: C::Op) -> Result<()> {
+    fn commit(&mut self, op: C::Op) -> Result<Self::Op> {
         let name = format!("actor_{}", self.actor.to_string());
         let parent = match self.repo.find_branch(&name, git2::BranchType::Local) {
             Ok(branch) => {
@@ -248,9 +248,14 @@ impl<A, C> LogReplicable<A, C> for GitLog<A, C> where
         let branch_ref = format!("refs/heads/{}", name);
         println!("committing to branch ref: {}", branch_ref);
 
-        self.repo
+        let commit_oid = self.repo
             .commit(Some(&branch_ref), &sig, &sig, "db op", &tree, &parent_commits)?;
-        Ok(())
+        
+        Op::from_commit(
+            self.actor.clone(),
+            &self.repo,
+            &self.repo.find_commit(commit_oid)?
+        )
     }
 
     fn pull(&mut self, other: &Self) -> Result<()> {
@@ -311,26 +316,26 @@ impl<A, C> LogReplicable<A, C> for GitLog<A, C> where
     }
 }
 
-impl<A: Actor, C: Debug + CmRDT> GitLog<A, C>
+impl<A: Actor, C: Debug + CmRDT> Log<A, C>
     where C::Op : DeserializeOwned + Serialize + Eq
 {
     pub fn auth(actor: A, repo: git2::Repository, name: String, url: String, user: String, pass: String) -> Self {
-        GitLog {
+        Log {
+            actor: actor,
             name: name,
             url: url,
             auth: Some(Auth { user, pass }),
-            actor: actor,
             repo: repo,
             phantom_crdt: PhantomData
         }
     }
 
     pub fn no_auth(actor: A, repo: git2::Repository, name: String, url: String) -> Self {
-        GitLog {
+        Log {
+            actor: actor,
             name: name,
             url: url,
             auth: None,
-            actor: actor,
             repo: repo,
             phantom_crdt: PhantomData
         }

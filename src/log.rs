@@ -17,7 +17,7 @@ pub trait LogReplicable<A: Actor, C: CmRDT> {
 
     fn next(&self) -> Result<Option<Self::Op>>;
     fn ack(&mut self, op: &Self::Op) -> Result<()>;
-    fn commit(&mut self, op: C::Op) -> Result<()>;
+    fn commit(&mut self, op: C::Op) -> Result<Self::Op>;
     fn pull(&mut self, other: &Self) -> Result<()>;
     fn push(&self, other: &mut Self) -> Result<()>;
 }

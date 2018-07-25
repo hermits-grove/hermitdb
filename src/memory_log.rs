@@ -6,19 +6,19 @@ use log::{TaggedOp, LogReplicable};
 use error::Result;
 
 #[derive(Debug, Clone)]
-pub struct MemoryLog<A: Actor, C: Debug + CmRDT> {
+pub struct Log<A: Actor, C: Debug + CmRDT> {
     actor: A,
     logs: BTreeMap<A, (u64, Vec<C::Op>)>
 }
 
 #[derive(Debug, Clone)]
-pub struct MemoryOp<A: Actor, C: Debug + CmRDT> {
+pub struct Op<A: Actor, C: Debug + CmRDT> {
     actor: A,
     index: u64,
     op: C::Op
 }
 
-impl<A: Actor, C: Debug + CmRDT> TaggedOp<C> for MemoryOp<A, C> {
+impl<A: Actor, C: Debug + CmRDT> TaggedOp<C> for Op<A, C> {
     type ID = (A, u64);
 
     fn id(&self) -> Self::ID {
@@ -30,8 +30,8 @@ impl<A: Actor, C: Debug + CmRDT> TaggedOp<C> for MemoryOp<A, C> {
     }
 }
 
-impl<A: Actor, C: Debug + CmRDT> LogReplicable<A, C> for MemoryLog<A, C> {
-    type Op = MemoryOp<A, C>;
+impl<A: Actor, C: Debug + CmRDT> LogReplicable<A, C> for Log<A, C> {
+    type Op = Op<A, C>;
 
     fn next(&self) -> Result<Option<Self::Op>> {
         let largest_lag = self.logs.iter()
@@ -41,7 +41,7 @@ impl<A: Actor, C: Debug + CmRDT> LogReplicable<A, C> for MemoryLog<A, C> {
             if *index >= log.len() as u64 {
                 Ok(None)
             } else {
-                Ok(Some(MemoryOp {
+                Ok(Some(Op {
                     actor: actor.clone(),
                     index: *index,
                     op: log[*index as usize].clone()
@@ -64,12 +64,17 @@ impl<A: Actor, C: Debug + CmRDT> LogReplicable<A, C> for MemoryLog<A, C> {
         Ok(())
     }
 
-    fn commit(&mut self, op: C::Op) -> Result<()> {
+    fn commit(&mut self, op: C::Op) -> Result<Self::Op> {
         let log = self.logs.entry(self.actor.clone())
             .or_insert_with(|| (0, Vec::new()));
 
-        log.1.push(op);
-        Ok(())
+        log.1.push(op.clone());
+
+        Ok(Op {
+            actor: self.actor.clone(),
+            index: log.0,
+            op: op
+        })
     }
 
     fn pull(&mut self, other: &Self) -> Result<()> {
@@ -91,9 +96,9 @@ impl<A: Actor, C: Debug + CmRDT> LogReplicable<A, C> for MemoryLog<A, C> {
     }
 }
 
-impl<A: Actor, C: Debug + CmRDT> MemoryLog<A, C> {
+impl<A: Actor, C: Debug + CmRDT> Log<A, C> {
     pub fn new(actor: A) -> Self {
-        MemoryLog {
+        Log {
             actor: actor,
             logs: BTreeMap::new()
         }

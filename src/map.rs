@@ -219,8 +219,8 @@ impl<K: Key + Debug, V: Val<A> + Debug, A: Actor> Map<K, V, A> {
     pub fn update(
         &mut self,
         key: K,
-        updater: impl FnOnce(V) -> Option<V::Op>,
-        actor: A
+        actor: A,
+        updater: impl FnOnce(V) -> Option<V::Op>
     ) -> Result<Op<K, V, A>> {
         let mut clock = self.get_clock()?;
         clock.increment(actor.clone());
@@ -236,8 +236,6 @@ impl<K: Key + Debug, V: Val<A> + Debug, A: Actor> Map<K, V, A> {
         } else {
             Op::Nop
         };
-
-        self.apply(&op)?;
         Ok(op)
     }
 
@@ -246,7 +244,6 @@ impl<K: Key + Debug, V: Val<A> + Debug, A: Actor> Map<K, V, A> {
         let mut clock = self.get_clock()?;
         clock.increment(actor.clone());
         let op = Op::Rm { clock, key };
-        self.apply(&op)?;
         Ok(op)
     }
 
@@ -314,25 +311,21 @@ mod tests {
                 let op = match die_roll % 3 {
                     0 => {
                         // update inner map
-                        map.update(key, |mut inner_map| {
+                        map.update(key, actor.clone(), |mut inner_map| {
                             let die_roll: u8 = g.gen();
                             let inner_key = g.gen();
                             match die_roll % 4 {
                                 0 => {
                                     // update key inner rm
-                                    let op = inner_map
-                                        .update(inner_key, |_| None, actor.clone());
+                                    let op = inner_map.update(inner_key, actor.clone(), |_| None);
                                     Some(op)
                                 },
                                 1 => {
                                     // update key and val update
-                                    let op = inner_map.update(inner_key, |mut reg| {
-                                        reg.update(
-                                            g.gen(),
-                                            (g.gen(), actor.clone())
-                                        ).unwrap();
+                                    let op = inner_map.update(inner_key, actor.clone(), |mut reg| {
+                                        reg.update(g.gen(), (g.gen(), actor.clone())).unwrap();
                                         Some(reg)
-                                    }, actor.clone());
+                                    });
                                     Some(op)
                                 },
                                 2 => {
@@ -345,7 +338,7 @@ mod tests {
                                     None
                                 }
                             }
-                        }, actor.clone()).unwrap()
+                        }).unwrap()
                     },
                     1 => {
                         // rm
@@ -383,18 +376,15 @@ mod tests {
         let mut m: TMap = Map::new(mk_tree());
 
         // constructs a default value if does not exist
-        m.update(
-            101,
-            |mut map| {
-                Some(map.update(110, |mut reg| {
-                    let new_val = (reg.val + 1) * 2;
-                    let new_dot = (reg.dot.0 + 1, 1);
-                    assert!(reg.update(new_val, new_dot).is_ok());
-                    Some(reg)
-                }, 1))
-            },
-            1
-        ).unwrap();
+        let up_op = m.update(101, 1, |mut map| {
+            Some(map.update(110, 1, |mut reg| {
+                let new_val = (reg.val + 1) * 2;
+                let new_dot = (reg.dot.0 + 1, 1);
+                assert!(reg.update(new_val, new_dot).is_ok());
+                Some(reg)
+            }))
+        }).unwrap();
+        m.apply(&up_op).unwrap();
 
         assert_eq!(
             m.get(&101).unwrap().unwrap().get(&110),
@@ -402,27 +392,25 @@ mod tests {
         );
 
         // the map should give the latest val to the closure
-        m.update(
-            101,
-            |mut map| {
-                Some(map.update(110, |mut reg| {
-                    assert_eq!(reg, LWWReg { val: 2, dot: (1, 1) });
-                    let new_val = (reg.val + 1) * 2;
-                    let new_dot = (reg.dot.0 + 1, 1);
-                    assert!(reg.update(new_val, new_dot).is_ok());
-                    Some(reg)
-                }, 1))
-            },
-            1
-        ).unwrap();
-
+        let up_op2 = m.update(101, 1, |mut map| {
+            Some(map.update(110, 1, |mut reg| {
+                assert_eq!(reg, LWWReg { val: 2, dot: (1, 1) });
+                let new_val = (reg.val + 1) * 2;
+                let new_dot = (reg.dot.0 + 1, 1);
+                assert!(reg.update(new_val, new_dot).is_ok());
+                Some(reg)
+            }))
+        }).unwrap();
+        m.apply(&up_op2).unwrap();
+        
         assert_eq!(
             m.get(&101).unwrap().unwrap().get(&110),
             Some(&LWWReg { val: 6, dot: (2, 1) })
         );
 
         // Returning None from the closure should remove the element
-        m.update(101, |_| None, 1).unwrap();
+        let up_op3 = m.update(101, 1, |_| None).unwrap();
+        m.apply(&up_op3).unwrap();
 
         assert_matches!(m.get(&101), Ok(None));
     }
@@ -443,55 +431,39 @@ mod tests {
     fn test_remove() {
         let mut m: TMap = Map::new(mk_tree());
 
-        m.update(101, |mut m| Some(m.update(110, |r| Some(r), 1)), 1).unwrap();
+        let up_op = m.update(101, 1, |mut m| Some(m.update(110, 1, |r| Some(r)))).unwrap();
+        m.apply(&up_op).unwrap();
 
         let mut inner_map: InnerMap = crdts::Map::new();
-        inner_map.update(110, |r| Some(r), 1);
+        inner_map.update(110, 1, |r| Some(r));
         assert_eq!(m.get(&101).unwrap(), Some(inner_map));
 
-        m.rm(101, 1).unwrap();
+        let rm_op = m.rm(101, 1).unwrap();
+        m.apply(&rm_op).unwrap();
         assert_eq!(m.get(&101).unwrap(), None);
     }
 
     #[test]
     fn test_reset_remove_semantics() {
         let mut m1 = TMap::new(mk_tree());
-        let m1_op1 = m1.update(
-            101,
-            |mut map| {
-                let op = map.update(
-                    110,
-                    |mut reg| {
-                        reg.update(32, (0, 74)).unwrap();
-                        Some(reg)
-                    },
-                    74
-                );
-                Some(op)
-            },
-            74
-        ).unwrap();
+        let m1_op1 = m1.update(101, 74, |mut map| {
+            Some(map.update(110, 74, |mut reg| {
+                reg.update(32, (0, 74)).unwrap();
+                Some(reg)
+            }))
+        }).unwrap();
 
         let mut m2 = TMap::new(mk_tree());
         m2.apply(&m1_op1).unwrap();
 
         let m1_op2 = m1.rm(101, 74).unwrap();
 
-        let m2_op1 = m2.update(
-            101,
-            |mut map| {
-                let op = map.update(
-                    220,
-                    |mut reg| {
-                        reg.update(5, (0, 37)).unwrap();
-                        Some(reg)
-                    },
-                    37
-                );
-                Some(op)
-            },
-            37
-        ).unwrap();
+        let m2_op1 = m2.update(101, 37, |mut map| {
+            Some(map.update(220, 37, |mut reg| {
+                reg.update(5, (0, 37)).unwrap();
+                Some(reg)
+            }))
+        }).unwrap();
 
         m1.apply(&m2_op1).unwrap();
         m2.apply(&m1_op2).unwrap();
@@ -529,7 +501,7 @@ mod tests {
         let mut m2 = TMap::new(mk_tree());
 
         let op1 = m1.rm(102, 75).unwrap();
-        let op2 = m2.update(102, |_| Some(crdts::map::Op::Nop), 61).unwrap();
+        let op2 = m2.update(102, 61, |_| Some(crdts::map::Op::Nop)).unwrap();
 
         assert!(m1.apply(&op2).is_ok());
         assert!(m2.apply(&op1).is_ok());
@@ -543,8 +515,10 @@ mod tests {
         let mut m1 = TMap::new(mk_tree());
         let mut m2 = TMap::new(mk_tree());
 
-        let op1 = m1.update(0, |_| Some(crdts::map::Op::Nop), 35).unwrap();
+        let op1 = m1.update(0, 35, |_| Some(crdts::map::Op::Nop)).unwrap();
+        m1.apply(&op1).unwrap();
         let op2 = m2.rm(1, 47).unwrap();
+        m2.apply(&op2).unwrap();
 
         assert!(m1.apply(&op2).is_ok());
         assert!(m2.apply(&op1).is_ok());

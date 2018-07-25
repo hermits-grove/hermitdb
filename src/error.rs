@@ -5,6 +5,7 @@ extern crate crdts;
 extern crate sled;
 
 use std::{self, fmt};
+use data::Kind;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -13,6 +14,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     NotFound,
     NoRemote,
+    UnexpectedKind(Kind, Kind),
     DaoField(String),
     BranchNameEncodingError,
     BranchIsNotADirectReference,
@@ -36,6 +38,8 @@ impl fmt::Display for Error {
                 write!(f, "Key not found"),
             Error::NoRemote =>
                 write!(f, "No Git remote has been added to the db"),
+            Error::UnexpectedKind(expected, got) =>
+                write!(f, "Unexpected kind! got: {:?}, expected: {:?}", got, expected),
             Error::BranchNameEncodingError =>
                 write!(f, "A branch name is not utf8 encoded"),
             Error::BranchIsNotADirectReference =>
@@ -67,6 +71,8 @@ impl std::error::Error for Error {
         match self {
             Error::NotFound => "Key was not found",
             Error::NoRemote => "No Git remote has been added to the db",
+            Error::UnexpectedKind(_, _) =>
+                "Unexpected kind, were you attempting to convert a Data into something it's not?",
             Error::BranchNameEncodingError => "A branch name is not utf8 encoded",
             Error::BranchIsNotADirectReference =>
                 "A branch reference isn't a direct ref to an oid",
@@ -90,6 +96,7 @@ impl std::error::Error for Error {
         match self {
             Error::NotFound => None,
             Error::NoRemote => None,
+            Error::UnexpectedKind(_, _) => None,
             Error::BranchNameEncodingError => None,
             Error::BranchIsNotADirectReference => None,
             Error::LogCommitDoesNotContainOp => None,
