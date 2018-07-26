@@ -15,10 +15,11 @@ data-encoding = "2.1.1"
 time = "0.1.39"
 tempfile = "3.0.1"
 assert_matches = "1.2.0"
-sled = "0.15.17"
 
-# [dependencies.sled]
-# path = "../sled/crates/sled"
+[dependencies.sled]
+# version = "0.15.17"
+features = ["zstd"]
+path = "../sled/crates/sled"
 
 [dependencies.crdts]
 # path = "../rust-crdt"
@@ -35,4 +36,3 @@ skeptic = "0.13"
 
 [build-dependencies]
 skeptic = "0.13"
-
