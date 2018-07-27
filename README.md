@@ -1,4 +1,3 @@
-
 <p align="center">
   <img src="art/george.svg"></img>
 </p>
@@ -90,8 +89,6 @@ If by chance another device manages to commit and push an Op while we are attemp
 
 - https://github.com/ff-notes/ff - a distributed notes app built with CRDT's + Git
 
-<div style="text-align: center">
-  <object data="art/amanita.svg" type="image/svg+xml"> 
-    <img src="art/amanita.jpg" /> <!-- TODO: need to render a fallback jpg!!! -->
-  </object>
-</div>
+<p align="center">
+  <img src="art/amanita.svg"></img>
+</p>
