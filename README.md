@@ -1,6 +1,5 @@
-<div style="text-align: center">
-  <img src="art/george.svg"></img>
-</div>
+
+<img align="center" src="art/george.svg"></img>
 
 # HermitDB
 
