@@ -4,7 +4,7 @@
 
 # HermitDB
 
-######  A privacy focused, decentralized database replicated over Git (or any other distributed log)
+######  A privacy focused decentralized database replicated over Git (or any other distributed log)
 
 The replicated log datastructure has popped up in many distributed systems over the years, we see it in Bitcoin as the blockchain, we see it in systems that rely on distributed logs like Kafka, and of course we see it in Git as the branch commit history.
 
