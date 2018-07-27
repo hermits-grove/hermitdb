@@ -1,4 +1,7 @@
-<img align="middle" src="art/george.svg"></img>
+
+<p align="center">
+  <img src="art/george.svg"></img>
+</p>
 
 # HermitDB
 
