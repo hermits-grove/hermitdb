@@ -4,86 +4,38 @@
 
 # HermitDB
 
-###### A privacy concious database for apps that respect user privacy 
+###### A decentralized, privacy focused database replicated over Git (or any other distributed log)
 
-#### Should you use gitdb?
+The replicated log datastructure has popped up in many distributed systems over the years, we see it in Bitcoin as the blockchain, we see it in systems that rely on distributed logs like Kafka, and of course we see it in Git as the branch commit history.
 
-Gitdb is not fast and it's features and tooling are bare bones, but... it may be enough for most apps.
+HermitDB recognizes the whitespread deployment of these logs and will allow users to replicate their data using a log that they provide.
 
-Gitdb's goals is to be a fast-enough, offline-first, distributed key-value store with strong privacy and support for automated conflict resolution.
+If this is all a bit too abstract, the motivating idea is that if you've built an app on HermitDB and I am a user of your app, I can sync the apps data across all of my devices by pointing your app to a Git repo that I control.
 
-Applications built using GitDB tap into a large federated network for storing data: Git is a widely deployed and well understood protocol, users have a wide selection of storage options to choose from. They may pay Github, Gitlab, Bitbucket, etc.. or even host their own. 
 
-The original motivator for gitdb was *mona,* a password manager which relied on Git to manage state across devices (*[the project is in development here.](https://github.com/the-gitdb-cooperative/mona)*)
+## Motivation
 
-*You should consider using gitdb if you care for user agancy over their data **and** you do not need to store obscene amounts of data or perform 100s of operations per second*
+We are now seeing the dangers of centralized data and many of us are looking for and building decentralized alternatives to the tools we use.
 
-#### Design
+The larger scale problems seem to be in good hands. Decentralized solutions are popping up everyday for social networks, money, content distribution, online identity and many other hard problems.
 
-GitDB stores all mutations to the database in git commits. These mutations are called `Ops` and they allow us to replicate the minimal amount of information necessary for other devices to stay in sync.
+<p align="center">
+	But what about the tools to manage your life?
+</p>
 
-Everytime a mutating operation is performed on the database, we generate an `Op`. Op's themselves are also CRDT's meaning we can merge two Ops to generate a new Op which describe the mutations of both Ops.
+Tools like password managers, calendars, contact books and note taking apps. These all help us organize our life. Unfortunatly, we give up our data when we want to sync across our devices.
 
-Ops are not committed imediately, instead they are merged into a local cached Op. The cached Op is only committed when a git push is requested. This is done to avoid generating a very large number of commits.
+Developers want to give us an experience where our data follows us around, but the existing infrastructure and tooling push developers in the direction of centralized data.
+<p align="center">
+	This is where HermitDB want's to help out.
+	<br>
+	<br>
+	<i>Tools built with HermitDB give users agency over their data.</i>
+</p>
+	
+## In The Weeds
 
-When a new device is added to GitDB, we replay from the earliest known Op up to the most recent Op.
-
-To sync, we perform a git fetch and apply all Ops from fetched commits in sequential order. We then commit our cached op (if one exists) and push it to the remote.
-
-If by chance another device manages to commit and push an Op while we are attempting to push, we will now have a conflicting commit. To solve this we undo our own commit, put our uncommitted op back in the cached state, and restart the sync procedure. This repeats with exponential backoff until we push successfully (TAI: can we merge the conflicting Op with ours?)
-
-##### Op
-
-``` javascript
-// example remove op
-{
-  "vclock": [
-    {
-      "actor": base64(98), // Actor chosen randomly, 128 bits to avoid collision
-      "version": 33
-    }
-  ],
-  "op": {
-    "action": "remove",
-    "key": base64("xyz".to_bytes()), // no key encoding restrictions, just bytes
-    "type": "map"
-  }
-}
-
-// Example Update op which sets "autologoff" to `false`.
-//
-// "autologoff" is an entry in the `prefs` map which, in turn, is an
-// entry in the `mona` map.
-{
-  "vclock": [
-    {
-      "actor": base64(98), // Actor chosen randomly, 128 bits to avoid collision
-      "version": 33
-    }
-  ],
-  "op": {
-    "action": "update",
-    "key": base64("mona".to_bytes()),
-    "type": "map",
-    "op": { // Values are also CRDT's, nested op's structure depends on `type`
-      "action": "update",
-      "key": base64("pref".to_bytes()),
-      "type": "map",
-      "op": {
-        "action": "update",
-        "key": base64("autologoff".to_bytes()),
-        "type": "reg",
-        "op": {
-          "val": { // TAI: registers can hold any type of data?
-            "type": "bool",
-            "data": false
-          }
-        }
-      }
-    }
-  }
-}
-```
+At it's core, HermitDB is a Key/Value CmRDT store where ops are replicated over a user provided log. Values in the key/value store are themselves also CmRDT's.
 
 ## Prior Art
 
