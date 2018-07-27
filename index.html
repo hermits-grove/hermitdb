@@ -14,18 +14,19 @@
     </div>
     <div class="content">
       <p>
-	The replicated log datastructure has popped up in many distributed systems over the years,
-	we see it in Bitcoin as the blockchain, we see it in systems that rely on distributed logs
-	like Kafka, and of course we see it in Git as the branch commit history.
+	The replicated log datastructure has popped up in many distributed systems over
+	the years, we see it in Bitcoin as the blockchain, we see it in systems that
+	rely on distributed logs like Kafka, and of course we see it in Git as the branch
+	commit history.
       </p>
       <p>
-	HermitDB recognizes the whitespread deployment of these logs and will allow users to
-	replicate their data using a log that they provide.
+	HermitDB recognizes the whitespread deployment of these logs and will allow users
+	to replicate their data using a log that they provide.
       </p>
       <p>
-	If this is all a bit too abstract, the motivating idea is that if you've built an app on
-	HermitDB and I am a user of your app, I can sync the apps data across all of my
-	devices by pointing your app to a Git repo that I control.
+	If this is all a bit too abstract, the motivating idea is that if you've built
+	an app on HermitDB and I am a user of your app, I can sync the apps data across
+	all of my devices by pointing your app to a Git repo that I control.
       </p>
       <h2 class="hcenter">Motivation</h2>
       <p>
@@ -60,6 +61,11 @@
       <p>
 	At it's core, HermitDB is a Key/Value CmRDT store where ops are replicated
 	over a user provided log. Values in the key/value store are themselves also CmRDT's.
+    </div>
+    <div class="hcenter logo">
+      <object data="amanita.svg" type="image/svg+xml"> 
+	<img src="amanita.jpg" /> <!-- TODO: need to render a fallback jpg!!! -->
+      </object>
     </div>
   </body>
 </html>
