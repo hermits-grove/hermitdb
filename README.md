@@ -1,4 +1,10 @@
-# gitdb
+<div style="text-align: center">
+  <object data="art/george.svg" type="image/svg+xml"> 
+    <img src="art/george.jpg" /> <!-- TODO: need to render a fallback jpg!!! -->
+  </object>
+</div>
+
+# HermitDB
 
 ###### A privacy concious database for apps that respect user privacy 
 
@@ -84,3 +90,9 @@ If by chance another device manages to commit and push an Op while we are attemp
 ## Prior Art
 
 - https://github.com/ff-notes/ff - a distributed notes app built with CRDT's + Git
+
+<div style="text-align: center">
+  <object data="art/amanita.svg" type="image/svg+xml"> 
+    <img src="art/amanita.jpg" /> <!-- TODO: need to render a fallback jpg!!! -->
+  </object>
+</div>
