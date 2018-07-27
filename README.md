@@ -1,7 +1,5 @@
 <div style="text-align: center">
-  <object data="art/george.svg" type="image/svg+xml"> 
-    <img src="art/george.jpg" /> <!-- TODO: need to render a fallback jpg!!! -->
-  </object>
+  <img src="art/george.svg"></img>
 </div>
 
 # HermitDB
