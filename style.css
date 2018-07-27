@@ -3,8 +3,8 @@
   font-style: normal;
   font-weight: 400;
   src: local('Slabo 27px'), local('Slabo27px-Regular'),
-       url('Slabo27px-Regular.woff2') format('woff2'),
-       url('Slabo27px-Regular.ttf') format('truetype');
+       url('Slabo27px-Regular.ttf') format('truetype'),
+       url('Slabo27px-Regular.woff2') format('woff2');
 }
 
 html {
