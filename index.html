@@ -61,10 +61,30 @@
       </p>
       <h2 class="hcenter">In The Weeds</h2>
       <p>
-	At it's core, HermitDB is a Key/Value CmRDT store where ops are replicated
-	over a user provided log. Values in the key/value store are themselves also CmRDT's.
+	At a high level, HermitDB is a CRDT Key/Value store that is replicated by devices distributing their log of mutations to the database. The storage and replication mechanism of these logs is modular, meaning we can support replication over any log-like structure a user provides (currently only a Git based log is implemented).
+      </p>
+      <p>
+	To understand how HermitDB works, lets pull apart how a remove operation is executed and replicated.
+      </p>
+      <div class="hcenter">
+	<img class="img_pad" src="art/explain_rm.svg"></img>
+	<div class="img_caption">The remove operation is logged first, then executed.</div>
+      </div>
+      <ol>
+	<li>The database remove method is called</li>
+	<li>The remove operation is written to this devices log</li>
+	<li>Once the log write completes successfully, we remove the key from the Key / Value store</li>
+      </ol> 
+      <div class="hcenter">
+	<img class="img_pad" src="art/explain_replication.svg"></img>
+	<div class="img_caption">On sync, the logs from other devices are replicated to your device.</div>
+      </div>
+      <div class="hcenter">
+	<img class="img_pad" src="art/explain_replay.svg"></img>
+	<div class="img_caption">Once the logs have been fetched, we can begin replaying operations from other devices</div>
+      </div>
     </div>
-    <div class="hcenter logo">
+    <div class="hcenter img_pad">
       <img src="art/amanita.svg"></img>
     </div>
   </body>

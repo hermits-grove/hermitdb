@@ -11,6 +11,11 @@ html {
     font-family: 'Slabo 27px', serif;
 }
 
+
+p {
+    text-indent: 25px;
+}
+
 .logo {
     margin-top: 50px;
     font-size: 48pt;
@@ -27,6 +32,12 @@ html {
     margin: 0 auto;
 }
 
-p {
-    text-indent: 25px;
+.img_pad {
+    margin: 50px;
+}
+
+.img_caption {
+    font-size: 10pt;
+    max-width: 300px;
+    margin: 0 auto;
 }
