@@ -23,8 +23,9 @@ quickcheck = "0.6.2"
 # path = "../sled/crates/sled"
 
 [dependencies.crdts]
-git = "https://github.com/davidrusu/rust-crdt"
-branch = "op-replication"
+path = "../rust-crdt"
+# git = "https://github.com/davidrusu/rust-crdt"
+# branch = "op-replication"
 
 [dependencies.bincode]
 version = "1.0.1"

@@ -1,4 +1,4 @@
-use crdts::CmRDT;
+use crdts::{CmRDT, VClock, Dot};
 
 use error::Result;
 use map;
@@ -18,21 +18,25 @@ impl<L: LogReplicable<Actor, Map>> DB<L> {
         DB { log, remote_logs: Vec::new(), map }
     }
 
-    pub fn get(&self, key: &(Vec<u8>, Kind)) -> Result<Option<Data>> {
+    pub fn dot(&self, actor: Actor) -> Result<Dot<Actor>> {
+        self.map.dot(actor)
+    }
+
+    pub fn get(&self, key: &(Vec<u8>, Kind)) -> Result<Option<map::Entry<Data, Actor>>> {
         self.map.get(key)
     }
 
-    pub fn update<F>(&mut self, key: (Vec<u8>, Kind), actor: Actor, updater: F) -> Result<()>
-        where F: FnOnce(Data) -> Option<Op>
+    pub fn update<F>(&mut self, key: (Vec<u8>, Kind), dot: Dot<Actor>, updater: F) -> Result<()>
+        where F: FnOnce(Data, Dot<Actor>) -> Op
     {
-        let map_op = self.map.update(key, actor, updater)?;
+        let map_op = self.map.update(key, dot, updater)?;
         let tagged_op = self.log.commit(map_op)?;
         self.map.apply(tagged_op.op())?;
         self.log.ack(&tagged_op)
     }
 
-    pub fn rm(&mut self, key: (Vec<u8>, Kind), actor: Actor) -> Result<()> {
-        let op = self.map.rm(key, actor)?;
+    pub fn rm(&mut self, key: (Vec<u8>, Kind), context: VClock<Actor>) -> Result<()> {
+        let op = self.map.rm(key, context);
         let tagged_op = self.log.commit(op)?;
         self.map.apply(tagged_op.op())?;
         self.log.ack(&tagged_op)

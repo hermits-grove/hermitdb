@@ -21,7 +21,7 @@ impl Ord for Prim {
             (Prim::Int(a), Prim::Int(b)) => a.cmp(&b),
             (Prim::Str(a), Prim::Str(b)) => a.cmp(&b),
             (Prim::Blob(a), Prim::Blob(b)) => a.cmp(&b),
-            // TAI: we panic when we compare with NaN. expected behaviour?
+            // TAI: we panic when we compare with NaN. is this expected behaviour?
             (a, b) => a.partial_cmp(&b).unwrap()
         }
     }
@@ -48,14 +48,14 @@ pub enum Kind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Data {
     Nil,
-    Reg(crdts::LWWReg<Prim, (u64, Actor)>),
+    Reg(crdts::MVReg<Prim, Actor>),
     Set(crdts::Orswot<Prim, Actor>),
     Map(crdts::Map<(Vec<u8>, Kind), Box<Data>, Actor>)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op {
-    Reg(crdts::LWWReg<Prim, (u64, Actor)>),
+    Reg(crdts::mvreg::Op<Prim, Actor>),
     Set(crdts::orswot::Op<Prim, Actor>),
     Map(crdts::map::Op<(Vec<u8>, Kind), Box<Data>, Actor>)
 }
@@ -119,9 +119,9 @@ impl CmRDT for Data {
         let kind = self.kind();
         let op_kind = op.kind();
         match (self, op) {
-            (Data::Reg(cmrdt), Op::Reg(op)) => cmrdt.apply(&op).map_err(|e| e.into()),
-            (Data::Set(cmrdt), Op::Set(op)) => cmrdt.apply(&op).map_err(|e| e.into()),
-            (Data::Map(cmrdt), Op::Map(op)) => cmrdt.apply(&op).map_err(|e| e.into()),
+            (Data::Reg(crdt), Op::Reg(op)) => crdt.apply(op).map_err(|e| e.into()),
+            (Data::Set(crdt), Op::Set(op)) => crdt.apply(op).map_err(|e| e.into()),
+            (Data::Map(crdt), Op::Map(op)) => crdt.apply(op).map_err(|e| e.into()),
             _ => Err(Error::UnexpectedKind(kind, op_kind))
         }   
     }
@@ -169,9 +169,9 @@ impl Data {
             other => Err(Error::UnexpectedKind(Kind::Nil, other.kind()))
         }
     }
-    pub fn reg(self) -> Result<crdts::LWWReg<Prim, (u64, Actor)>> {
+    pub fn reg(self) -> Result<crdts::MVReg<Prim, Actor>> {
         match self {
-            Data::Nil => Ok(crdts::LWWReg::default()),
+            Data::Nil => Ok(crdts::MVReg::default()),
             Data::Reg(r) => Ok(r),
             other => Err(Error::UnexpectedKind(Kind::Reg, other.kind()))
         }
@@ -255,7 +255,7 @@ impl Kind {
     pub fn default_data(&self) -> Data {
         match self {
             Kind::Nil => Data::Nil,
-            Kind::Reg => Data::Reg(crdts::LWWReg::default()),
+            Kind::Reg => Data::Reg(crdts::MVReg::default()),
             Kind::Set => Data::Set(crdts::Orswot::default()),
             Kind::Map => Data::Map(crdts::Map::default()),
 

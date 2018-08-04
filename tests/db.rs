@@ -21,16 +21,17 @@ fn test_write_read_set() {
 
     assert_matches!(db.get(&("x".as_bytes().to_vec(), Kind::Set)), Ok(None));
 
+    let dot = db.dot(1).unwrap();
     assert_matches!(
-        db.update(("x".as_bytes().to_vec(), Kind::Set), 1, |data| {
+        db.update(("x".as_bytes().to_vec(), Kind::Set), dot, |data, dot| {
             let mut set = data.set().unwrap();
-            Some(Op::Set(set.add(Prim::Float(57.18), 1)))
+            Op::Set(set.add(Prim::Float(57.18), dot))
         }),
         Ok(())
     );
 
     assert_eq!(
-        db.get(&("x".as_bytes().to_vec(), Kind::Set)).unwrap().unwrap().set().unwrap().value(),
+        db.get(&("x".as_bytes().to_vec(), Kind::Set)).unwrap().unwrap().val.set().unwrap().value(),
         vec![Prim::Float(57.18)]
     );
 }
