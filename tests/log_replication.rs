@@ -35,36 +35,31 @@ impl Arbitrary for OpVec {
             let op = match die_roll % 3 {
                 0 => {
                     // update Orswot
-                    map.update(key, actor.clone(), |mut set| {
+                    map.update(key, map.dot(actor.clone()), |set, dot| {
                         let die_roll: u8 = g.gen();
                         let member = g.gen();
-                        match die_roll % 3 {
-                            0 => {
-                                // add member
-                                Some(set.add(member, actor.clone()))
-                            },
-                            1 => {
-                                // remove member
-                                let mut clock = set.precondition_context();
-                                clock.increment(actor);
-                                Some(set.remove_with_context(member, &clock))
-                            },
+                        match die_roll % 2 {
+                            0 => set.add(member, dot),
                             _ => {
-                                // rm this entry
-                                None
+                                let ctx = set.context(&member);
+                                set.remove(member, ctx)
                             }
                         }
                     })
                 },
                 1 => {
                     // rm
-                    map.rm(key, actor.clone())
+                    let ctx = map.get(&key)
+                        .map(|(_, c)| c)
+                        .unwrap_or(gitdb::crdts::VClock::new());
+                    map.rm(key, ctx)
                 },
                 _ => {
                     // nop
                     map::Op::Nop
                 }
             };
+            map.apply(&op);
             ops.push(op);
         }
         OpVec(actor, ops)
@@ -266,17 +261,16 @@ quickcheck! {
 
 #[test]
 fn test_quickcheck_1() {
-    // (OpVec(89, []), OpVec(51, [Up { clock: VClock { dots: {51: 5} }, key: 3, op: Rm { clock: VClock { dots: {} }, member: 21 } }])
     let mut a_log: memory_log::Log<u8, TMap> = memory_log::Log::new(89);
     let mut b_log: memory_log::Log<u8, TMap> = memory_log::Log::new(51);
     let mut a_map = TMap::new();
     let mut b_map = TMap::new();
 
     let op = map::Op::Up {
-        clock: vec![(51, 5)].into_iter().collect(),
+        dot: gitdb::crdts::Dot { actor: 51, counter: 5 },
         key: 3,
         op: orswot::Op::Rm {
-            clock: gitdb::crdts::VClock::new(),
+            context: gitdb::crdts::VClock::new(),
             member: 21
         }
     };
@@ -301,18 +295,13 @@ fn test_quickcheck_1() {
 
 #[test]
 fn test_quickcheck_2() {
-    // OpVec(97, []);
-    // OpVec(44, [Rm { clock: VClock { dots: {44: 17} }, key: 196 }]))
-    //  left: Map { clock: VClock { dots: {44: 17} }, entries: {} }
-    // right: Map { clock: VClock { dots: {} }, entries: {} }
-
     let mut a_log: memory_log::Log<u8, TMap> = memory_log::Log::new(89);
     let mut b_log: memory_log::Log<u8, TMap> = memory_log::Log::new(51);
     let mut a_map = TMap::new();
     let mut b_map = TMap::new();
 
     let op = map::Op::Rm {
-        clock: vec![(44, 17)].into_iter().collect(),
+        context: vec![(44, 17)].into_iter().collect(),
         key: 196
     };
     let tagged_op = b_log.commit(op).unwrap();
