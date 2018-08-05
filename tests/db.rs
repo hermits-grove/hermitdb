@@ -1,11 +1,11 @@
-extern crate gitdb;
+extern crate hermitdb;
 extern crate tempfile;
 
 #[macro_use]
 extern crate assert_matches;
 
-use gitdb::data::{Prim, Op, Kind, Actor};
-use gitdb::{memory_log, map, sled, db, DB};
+use hermitdb::data::{Prim, Op, Kind, Actor};
+use hermitdb::{memory_log, map, sled, db, DB};
 
 fn mk_db(actor: Actor) -> DB<memory_log::Log<Actor, db::Map>> {
     let config = sled::ConfigBuilder::new().temporary(true).build();

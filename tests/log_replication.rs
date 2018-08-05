@@ -1,4 +1,4 @@
-extern crate gitdb;
+extern crate hermitdb;
 extern crate tempfile;
 
 #[macro_use]
@@ -9,10 +9,10 @@ extern crate quickcheck;
 
 use quickcheck::{Arbitrary, Gen, TestResult};
 
-use gitdb::crdts::{map, orswot, Map, Orswot, CmRDT};
-use gitdb::{LogReplicable, TaggedOp};
-use gitdb::memory_log;
-use gitdb::git_log;
+use hermitdb::crdts::{map, orswot, Map, Orswot, CmRDT};
+use hermitdb::{LogReplicable, TaggedOp};
+use hermitdb::memory_log;
+use hermitdb::git_log;
 
 type TActor = u8;
 type TKey = u8;
@@ -51,7 +51,7 @@ impl Arbitrary for OpVec {
                     // rm
                     let ctx = map.get(&key)
                         .map(|(_, c)| c)
-                        .unwrap_or(gitdb::crdts::VClock::new());
+                        .unwrap_or(hermitdb::crdts::VClock::new());
                     map.rm(key, ctx)
                 },
                 _ => {
@@ -220,11 +220,11 @@ quickcheck! {
         let b_central_dir = tempfile::tempdir().unwrap();
         let c_central_dir = tempfile::tempdir().unwrap();
         
-        let a_pull_git = gitdb::git2::Repository::init_bare(&a_pull_dir.path()).unwrap();
-        let b_pull_git = gitdb::git2::Repository::init_bare(&b_pull_dir.path()).unwrap();
-        let a_central_git = gitdb::git2::Repository::init_bare(&a_central_dir.path()).unwrap();
-        let b_central_git = gitdb::git2::Repository::init_bare(&b_central_dir.path()).unwrap();
-        let c_central_git = gitdb::git2::Repository::init_bare(&c_central_dir.path()).unwrap();
+        let a_pull_git = hermitdb::git2::Repository::init_bare(&a_pull_dir.path()).unwrap();
+        let b_pull_git = hermitdb::git2::Repository::init_bare(&b_pull_dir.path()).unwrap();
+        let a_central_git = hermitdb::git2::Repository::init_bare(&a_central_dir.path()).unwrap();
+        let b_central_git = hermitdb::git2::Repository::init_bare(&b_central_dir.path()).unwrap();
+        let c_central_git = hermitdb::git2::Repository::init_bare(&c_central_dir.path()).unwrap();
         
         let a_pull = git_log::Log::no_auth(actor1, a_pull_git, "a_pull".into(), a_pull_dir.path().to_str().unwrap().to_string());
         let b_pull = git_log::Log::no_auth(actor2, b_pull_git, "b_pull".into(), b_pull_dir.path().to_str().unwrap().to_string());
@@ -249,7 +249,7 @@ quickcheck! {
     fn prop_log_preserves_order_git(ops: OpVec) -> bool {
         let log_dir = tempfile::tempdir().unwrap();
         let log_path = log_dir.path();
-        let log_git = gitdb::git2::Repository::init_bare(&log_path).unwrap();
+        let log_git = hermitdb::git2::Repository::init_bare(&log_path).unwrap();
         let log_path_string = log_path.to_str().unwrap().to_string();
         let log = git_log::Log::no_auth(ops.0, log_git, "log".into(), log_path_string);;
         
@@ -267,10 +267,10 @@ fn test_quickcheck_1() {
     let mut b_map = TMap::new();
 
     let op = map::Op::Up {
-        dot: gitdb::crdts::Dot { actor: 51, counter: 5 },
+        dot: hermitdb::crdts::Dot { actor: 51, counter: 5 },
         key: 3,
         op: orswot::Op::Rm {
-            context: gitdb::crdts::VClock::new(),
+            context: hermitdb::crdts::VClock::new(),
             member: 21
         }
     };
@@ -327,8 +327,8 @@ fn test_quickcheck_2() {
 #[test]
 fn test_quickcheck_3() {
     
-//    let root_a: &Path = Path::new("/Users/davidrusu/gitdb/a");
-//    let root_b: &Path = Path::new("/Users/davidrusu/gitdb/b");
+//    let root_a: &Path = Path::new("/Users/davidrusu/hermitdb/a");
+//    let root_b: &Path = Path::new("/Users/davidrusu/hermitdb/b");
 //    let a_log_path: &Path = &root_a.join("db");
 //    let b_log_path: &Path = &root_b.join("db");
     
@@ -339,8 +339,8 @@ fn test_quickcheck_3() {
     let b_log_path = b_log_dir.path();
     
     
-    let a_log_git = gitdb::git2::Repository::init_bare(&a_log_path).unwrap();
-    let b_log_git = gitdb::git2::Repository::init_bare(&b_log_path).unwrap();
+    let a_log_git = hermitdb::git2::Repository::init_bare(&a_log_path).unwrap();
+    let b_log_git = hermitdb::git2::Repository::init_bare(&b_log_path).unwrap();
 
 
     let actor1 = 1;

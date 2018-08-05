@@ -12,6 +12,21 @@ HermitDB recognizes the whitespread deployment of these logs and will allow user
 
 If this is all a bit too abstract, the motivating idea is that if you've built an app on HermitDB and I am a user of your app, I can sync the apps data across all of my devices by pointing your app to a Git repo that I control.
 
+``` rust
+extern crate hermitdb;
+extern crate sled;
+
+use hermitdb::{memory_log, map, DB};
+
+fn main() {
+	let actor = 32;
+    let config = sled::ConfigBuilder::new().temporary(true).build();
+    let tree = sled::Tree::start(config).unwrap();
+    let log = memory_log::Log::new(actor);
+    let map = map::Map::new(tree);
+    let db = DB::new(log, map);
+}
+```
 
 ## Motivation
 

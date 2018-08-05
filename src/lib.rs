@@ -1,5 +1,3 @@
-#![feature(box_patterns)]
-
 #[macro_use]
 extern crate serde_derive;
 extern crate serde;
@@ -10,7 +8,6 @@ pub extern crate sled;
 
 extern crate bincode;
 
-#[cfg(test)]
 #[macro_use]
 extern crate assert_matches;
 

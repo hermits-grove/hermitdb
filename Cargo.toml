@@ -1,9 +1,10 @@
 [package]
-name = "gitdb"
-version = "0.1.1"
+name = "hermitdb"
+version = "0.1.0"
 authors = ["David Rusu <davidrusu@protonmail.com>"]
-description = "A security concious database for apps that respect user privacy"
+description = "A private decentralized database replicated over Git (or any other distributed log)"
 license="GPL-2.0"
+build = "build.rs"
 
 [dependencies]
 git2 = "0.7.1"
@@ -16,9 +17,6 @@ tempfile = "3.0.1"
 assert_matches = "1.2.0"
 sled = "0.15.17"
 
-[dev-dependencies]
-quickcheck = "0.6.2"
-
 # [dependencies.sled]
 # path = "../sled/crates/sled"
 
@@ -30,3 +28,11 @@ branch = "op-replication"
 [dependencies.bincode]
 version = "1.0.1"
 features = ["i128"]
+
+[dev-dependencies]
+quickcheck = "0.6.2"
+skeptic = "0.13"
+
+[build-dependencies]
+skeptic = "0.13"
+
