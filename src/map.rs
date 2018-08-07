@@ -130,11 +130,11 @@ impl<K: Key + Debug, V: Val<A> + Debug, A: Actor> CmRDT for Map<K, V, A> {
                 entry.clock.witness(actor.clone(), counter).unwrap();
                 entry.val.apply(&op).map_err(|_| crdts::Error::NestedOpFailed)?;
                 let entry_bytes = bincode::serialize(&entry)?;
-                self.tree.set(key_bytes, entry_bytes);
+                self.tree.set(key_bytes, entry_bytes)?;
 
                 map_clock.witness(actor, counter).unwrap();
                 self.put_clock(map_clock)?;
-                self.apply_deferred();
+                self.apply_deferred()?;
                 self.tree.flush()?;
             }
         }
@@ -194,14 +194,15 @@ impl<K: Key + Debug, V: Val<A> + Debug, A: Actor> Map<K, V, A> {
     ///
     /// The updater must return Some(val) to have the updated val stored back in
     /// the Map. If None is returned, this entry is removed from the Map.
-    pub fn update<U>(&self, key: K, dot: Dot<A>, updater: U) -> Result<Op<K, V, A>>
-        where U: FnOnce(V, Dot<A>) -> V::Op
+    pub fn update<U, O>(&self, key: K, dot: Dot<A>, updater: U) -> Result<Op<K, V, A>>
+        where U: FnOnce(V, Dot<A>) -> O,
+              O: Into<V::Op>
     {
         let val = self.get(&key)
             ?.map(|entry| entry.val)
             .unwrap_or_else(|| V::default());
 
-        let op = updater(val, dot.clone());
+        let op = updater(val, dot.clone()).into();
         Ok(Op::Up { dot, key, op })
     }
 
@@ -243,7 +244,7 @@ impl<K: Key + Debug, V: Val<A> + Debug, A: Actor> Map<K, V, A> {
                     .or_insert_with(|| BTreeSet::new());
                 deferred_set.insert(key.clone());
             }
-            self.put_deferred(deferred);
+            self.put_deferred(deferred)?;
         }
 
         let key_bytes = self.key_bytes(&key)?;
@@ -254,7 +255,7 @@ impl<K: Key + Debug, V: Val<A> + Debug, A: Actor> Map<K, V, A> {
                 entry.clock = dom_clock;
                 entry.val.truncate(&context);
                 let new_entry_bytes = bincode::serialize(&entry)?;
-                self.tree.set(key_bytes, new_entry_bytes);
+                self.tree.set(key_bytes, new_entry_bytes)?;
             }
         }
         Ok(())

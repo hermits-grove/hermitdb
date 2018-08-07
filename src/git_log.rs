@@ -16,20 +16,26 @@ use crdts::{CmRDT, Actor};
 use log::{TaggedOp, LogReplicable};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct Auth {
-    user: String,
-    pass: String
+pub enum Auth {
+    None,
+    UserPass {
+        user: String,
+        pass: String
+    }
 }
 
 pub struct Log<A: Actor, C: Debug + CmRDT>
     where C::Op : DeserializeOwned + Serialize + Eq
 {
     actor: A,
-    name: String,
-    url: String,
-    auth: Option<Auth>,
     repo: git2::Repository,
     phantom_crdt: PhantomData<C>
+}
+
+pub struct Remote {
+    name: String,
+    url: String,
+    auth: Auth,
 }
 
 #[serde(bound(deserialize = ""))]
@@ -137,6 +143,8 @@ impl<A, C> LogReplicable<A, C> for Log<A, C> where
     C::Op : DeserializeOwned + Serialize + Eq
 {
     type Op = Op<A, C>;
+    type Remote = Remote;
+
     fn next(&self) -> Result<Option<Self::Op>> {
         let local_name = format!("actor_{}", self.actor.to_string());
         let local_acked = format!("acked_actor_{}", self.actor.to_string());
@@ -258,23 +266,23 @@ impl<A, C> LogReplicable<A, C> for Log<A, C> where
         )
     }
 
-    fn pull(&mut self, other: &Self) -> Result<()> {
-        println!("fetching remote: {}", &other.name);
+    fn pull(&mut self, remote: &Self::Remote) -> Result<()> {
+        println!("fetching remote: {}", &remote.name);
 
         println!("searching for existing remote in repo");
-        let mut git_remote = match self.repo.find_remote(&other.name) {
+        let mut git_remote = match self.repo.find_remote(&remote.name) {
             Ok(git_remote) => git_remote,
             Err(_) => {
-                eprintln!("Failed to find remote '{}', adding remote to git", other.name);
+                eprintln!("Failed to find remote '{}', adding remote to git", remote.name);
                 // this remote is not added to git yet, we add it
-                self.repo.remote(&other.name, &other.url)?
+                self.repo.remote(&remote.name, &remote.url)?
             }
         };
 
         println!("found a remote, starting fetch...");
         
         let mut fetch_opt = git2::FetchOptions::new();
-        fetch_opt.remote_callbacks(other.git_callbacks());
+        fetch_opt.remote_callbacks(remote.git_callbacks());
         let refspec_iter = git_remote.fetch_refspecs()?;
         let refspecs: Vec<&str> = refspec_iter.iter()
             .map(|r| r.unwrap())
@@ -284,19 +292,19 @@ impl<A, C> LogReplicable<A, C> for Log<A, C> where
         Ok(())
     }
 
-    fn push(&self, other: &mut Self) -> Result<()> {
+    fn push(&self, remote: &mut Self::Remote) -> Result<()> {
         println!("searching for existing remote in repo");
-        let mut git_remote = match self.repo.find_remote(&other.name) {
+        let mut git_remote = match self.repo.find_remote(&remote.name) {
             Ok(git_remote) => git_remote,
             Err(_) => {
-                eprintln!("Failed to find remote '{}', adding remote to git", other.name);
+                eprintln!("Failed to find remote '{}', adding remote to git", remote.name);
                 // this remote is not added to git yet, we add it
-                self.repo.remote(&other.name, &other.url)?
+                self.repo.remote(&remote.name, &remote.url)?
             }
         };
 
         let mut push_opt = git2::PushOptions::new();
-        push_opt.remote_callbacks(other.git_callbacks());
+        push_opt.remote_callbacks(remote.git_callbacks());
 
         let branches: Vec<String> = self.repo.branches(Some(git2::BranchType::Local))
             ?.map(|b| b.unwrap())
@@ -319,37 +327,27 @@ impl<A, C> LogReplicable<A, C> for Log<A, C> where
 impl<A: Actor, C: Debug + CmRDT> Log<A, C>
     where C::Op : DeserializeOwned + Serialize + Eq
 {
-    pub fn auth(actor: A, repo: git2::Repository, name: String, url: String, user: String, pass: String) -> Self {
-        Log {
-            actor: actor,
-            name: name,
-            url: url,
-            auth: Some(Auth { user, pass }),
-            repo: repo,
-            phantom_crdt: PhantomData
-        }
+    pub fn new(actor: A, repo: git2::Repository) -> Self {
+        Log { actor, repo, phantom_crdt: PhantomData }
+    }
+}
+
+impl Remote {
+    pub fn userpass_auth(name: String, url: String, user: String, pass: String) -> Self {
+        Remote { name, url, auth: Auth::UserPass { user, pass } }
     }
 
-    pub fn no_auth(actor: A, repo: git2::Repository, name: String, url: String) -> Self {
-        Log {
-            actor: actor,
-            name: name,
-            url: url,
-            auth: None,
-            repo: repo,
-            phantom_crdt: PhantomData
-        }
+    pub fn no_auth(name: String, url: String) -> Self {
+        Remote { name, url, auth: Auth::None }
     }
 
     pub fn git_callbacks(&self) -> git2::RemoteCallbacks {
         let mut cbs = git2::RemoteCallbacks::new();
         cbs.credentials(move |_, _, _| {
             match self.auth {
-                Some(Auth {ref user, ref pass} ) =>
+                Auth::None => panic!("It's a bug if this is ever called!"),
+                Auth::UserPass { ref user, ref pass } => 
                     git2::Cred::userpass_plaintext(user, pass),
-                None => {
-                    panic!("This should never be called!");
-                }
             }
         });
         cbs

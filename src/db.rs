@@ -9,13 +9,12 @@ pub type Map = map::Map<(Vec<u8>, Kind), Data, Actor>;
 
 pub struct DB<L: LogReplicable<Actor, Map>> {
     log: L,
-    remote_logs: Vec<L>,
     map: Map
 }
 
 impl<L: LogReplicable<Actor, Map>> DB<L> {
     pub fn new(log: L, map: Map) -> Self {
-        DB { log, remote_logs: Vec::new(), map }
+        DB { log, map }
     }
 
     pub fn dot(&self, actor: Actor) -> Result<Dot<Actor>> {
@@ -26,10 +25,11 @@ impl<L: LogReplicable<Actor, Map>> DB<L> {
         self.map.get(key)
     }
 
-    pub fn update<F>(&mut self, key: (Vec<u8>, Kind), dot: Dot<Actor>, updater: F) -> Result<()>
-        where F: FnOnce(Data, Dot<Actor>) -> Op
+    pub fn update<F, O>(&mut self, key: (Vec<u8>, Kind), dot: Dot<Actor>, updater: F) -> Result<()>
+        where F: FnOnce(Data, Dot<Actor>) -> O,
+              O: Into<Op>
     {
-        let map_op = self.map.update(key, dot, updater)?;
+        let map_op = self.map.update(key, dot, updater)?.into();
         let tagged_op = self.log.commit(map_op)?;
         self.map.apply(tagged_op.op())?;
         self.log.ack(&tagged_op)
@@ -42,11 +42,8 @@ impl<L: LogReplicable<Actor, Map>> DB<L> {
         self.log.ack(&tagged_op)
     }
 
-    pub fn sync(&mut self) -> Result<()> {
-        for mut remote_log in self.remote_logs.iter_mut() {
-            self.log.pull(&remote_log)?;
-            self.log.push(&mut remote_log)?;
-        }
+    pub fn sync(&mut self, remote: &mut L::Remote ) -> Result<()> {
+        self.log.sync(remote)?;
 
         while let Some(tagged_op) = self.log.next()? {
             self.map.apply(tagged_op.op())?;

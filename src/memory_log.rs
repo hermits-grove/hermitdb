@@ -32,6 +32,7 @@ impl<A: Actor, C: Debug + CmRDT> TaggedOp<C> for Op<A, C> {
 
 impl<A: Actor, C: Debug + CmRDT> LogReplicable<A, C> for Log<A, C> {
     type Op = Op<A, C>;
+    type Remote = Self;
 
     fn next(&self) -> Result<Option<Self::Op>> {
         let largest_lag = self.logs.iter()
@@ -77,8 +78,8 @@ impl<A: Actor, C: Debug + CmRDT> LogReplicable<A, C> for Log<A, C> {
         })
     }
 
-    fn pull(&mut self, other: &Self) -> Result<()> {
-        for (actor, (_, log)) in other.logs.iter() {
+    fn pull(&mut self, remote: &Self::Remote) -> Result<()> {
+        for (actor, (_, log)) in remote.logs.iter() {
             let entry = self.logs.entry(actor.clone())
                 .or_insert_with(|| (0, vec![]));
 
@@ -91,8 +92,8 @@ impl<A: Actor, C: Debug + CmRDT> LogReplicable<A, C> for Log<A, C> {
         Ok(())
     }
 
-    fn push(&self, other: &mut Self) -> Result<()> {
-        other.pull(self)
+    fn push(&self, remote: &mut Self::Remote) -> Result<()> {
+        remote.pull(self)
     }
 }
 

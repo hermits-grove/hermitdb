@@ -267,3 +267,51 @@ impl Kind {
         }
     }
 }
+
+impl From<f64> for Prim {
+    fn from(p: f64) -> Self {
+        Prim::Float(p)
+    }
+}
+
+impl From<i64> for Prim {
+    fn from(p: i64) -> Self {
+        Prim::Int(p)
+    }
+}
+
+impl From<String> for Prim {
+    fn from(p: String) -> Self {
+        Prim::Str(p)
+    }
+}
+
+impl<'a> From<&'a str> for Prim {
+    fn from(p: &'a str) -> Self {
+        Prim::from(p.to_string())
+    }
+}
+
+impl From<Vec<u8>> for Prim {
+    fn from(p: Vec<u8>) -> Self {
+        Prim::Blob(p)
+    }
+}
+
+impl From<crdts::mvreg::Op<Prim, Actor>> for Op {
+    fn from(op: crdts::mvreg::Op<Prim, Actor>) -> Self {
+        Op::Reg(op)
+    }
+}
+
+impl From<crdts::orswot::Op<Prim, Actor>> for Op {
+    fn from(op: crdts::orswot::Op<Prim, Actor>) -> Self {
+        Op::Set(op)
+    }
+}
+
+impl From<crdts::map::Op<(Vec<u8>, Kind), Box<Data>, Actor>> for Op {
+    fn from(op: crdts::map::Op<(Vec<u8>, Kind), Box<Data>, Actor>) -> Self {
+        Op::Map(op)
+    }
+}
