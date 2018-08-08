@@ -14,8 +14,19 @@ use git2;
 use error::{Error, Result};
 use crdts::{CmRDT, Actor};
 use log::{TaggedOp, LogReplicable};
+use crypto::KeyHierarchy;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+
+pub struct Log<A: Actor, C: Debug + CmRDT>
+    where C::Op : DeserializeOwned + Serialize + Eq
+{
+    actor: A,
+    repo: git2::Repository,
+    log_key: KeyHierarchy,
+    phantom_crdt: PhantomData<C>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum Auth {
     None,
     UserPass {
@@ -24,14 +35,7 @@ pub enum Auth {
     }
 }
 
-pub struct Log<A: Actor, C: Debug + CmRDT>
-    where C::Op : DeserializeOwned + Serialize + Eq
-{
-    actor: A,
-    repo: git2::Repository,
-    phantom_crdt: PhantomData<C>
-}
-
+#[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub struct Remote {
     name: String,
     url: String,
@@ -242,7 +246,7 @@ impl<A, C> LogReplicable<A, C> for Log<A, C> where
         let op_bytes = bincode::serialize(&op)?;
         let op_oid = self.repo.blob(&op_bytes)?;
         let mut builder = self.repo.treebuilder(None)?;
-        builder.insert("op", op_oid, 0o100644)?;
+        builder.insert("op", op_oid, 0o100644)?; // TODO: what is this constant?
         let tree_oid = builder.write()?;
         let tree = self.repo.find_tree(tree_oid)?;
 
@@ -327,8 +331,8 @@ impl<A, C> LogReplicable<A, C> for Log<A, C> where
 impl<A: Actor, C: Debug + CmRDT> Log<A, C>
     where C::Op : DeserializeOwned + Serialize + Eq
 {
-    pub fn new(actor: A, repo: git2::Repository) -> Self {
-        Log { actor, repo, phantom_crdt: PhantomData }
+    pub fn new(actor: A, repo: git2::Repository, log_key: KeyHierarchy) -> Self {
+        Log { actor, repo, log_key, phantom_crdt: PhantomData }
     }
 }
 

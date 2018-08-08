@@ -9,10 +9,8 @@ extern crate quickcheck;
 
 use quickcheck::{Arbitrary, Gen, TestResult};
 
-use hermitdb::crdts::{map, orswot, Map, Orswot, CmRDT};
-use hermitdb::{LogReplicable, TaggedOp};
-use hermitdb::memory_log;
-use hermitdb::git_log;
+use hermitdb::crdts::{map, Map, Orswot, CmRDT};
+use hermitdb::{memory_log, git_log, crypto, LogReplicable, TaggedOp};
 
 type TActor = u8;
 type TKey = u8;
@@ -59,7 +57,7 @@ impl Arbitrary for OpVec {
                     map::Op::Nop
                 }
             };
-            map.apply(&op);
+            map.apply(&op).unwrap();
             ops.push(op);
         }
         OpVec(actor, ops)
@@ -156,16 +154,31 @@ quickcheck! {
             return TestResult::discard();
         }
 
+        let root_key = crypto::KDF {
+            pbkdf2_iters: 1,
+            salt: [0u8; 256 / 8]
+        }.derive_root("password".as_bytes());
+
         let a_log_dir = tempfile::tempdir().unwrap();
         let b_log_dir = tempfile::tempdir().unwrap();
         let remote_dir = tempfile::tempdir().unwrap();
         
         let a_log_git = hermitdb::git2::Repository::init_bare(&a_log_dir.path()).unwrap();
         let b_log_git = hermitdb::git2::Repository::init_bare(&b_log_dir.path()).unwrap();
-        let remote_git = hermitdb::git2::Repository::init_bare(&remote_dir.path()).unwrap();
+        let _remote_git = hermitdb::git2::Repository::init_bare(&remote_dir.path()).unwrap();
         
-        let a_log = git_log::Log::new(actor1, a_log_git);
-        let b_log = git_log::Log::new(actor2, b_log_git);
+        let a_log = git_log::Log::new(
+            actor1,
+            a_log_git,
+            root_key.derive_child("a_log".as_bytes())
+        );
+
+        let b_log = git_log::Log::new(
+            actor2,
+            b_log_git,
+            root_key.derive_child("b_log".as_bytes())
+        );
+
         let remote = git_log::Remote::no_auth("remote".into(), remote_dir.path().to_str().unwrap().to_string());
 
         p2p_converge(a_log, b_log, remote, a_ops, b_ops);
@@ -183,8 +196,17 @@ quickcheck! {
         let log_dir = tempfile::tempdir().unwrap();
         let log_path = log_dir.path();
         let log_git = hermitdb::git2::Repository::init_bare(&log_path).unwrap();
-        let log_path_string = log_path.to_str().unwrap().to_string();
-        let log = git_log::Log::new(actor, log_git);
+
+        let root_key = crypto::KDF {
+            pbkdf2_iters: 1,
+            salt: [0u8; 256 / 8]
+        }.derive_root("password".as_bytes());
+        
+        let log = git_log::Log::new(
+            actor,
+            log_git,
+            root_key.derive_child("log".as_bytes())
+        );
         
         log_preserves_order(log, ops);
 
