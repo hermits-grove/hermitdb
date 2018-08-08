@@ -28,23 +28,23 @@ fn main() {
 }
 ```
 
-## If you have some spare attention, please direct it here.
+### If you have some spare attention, please direct it here.
 
-- [ ] crypto
-  - [ ] Reduce our reliance on a strong rng 
-	  If an attacker controls our source of entropy, we may leak something.
-    - [ ] Nonce's are generated randomly.
-		Since we have a seperate encryption key per log, and logs are immutable (are they? what if we add compaction?) we should be able to use a counter on log entries as a nonce.
-  - [ ] reduce our reliance on a strong password, all crypto entropy currently comes from the user's password, to improve security, we can look into adding an `entropy file`: a randomly generated file that is not synced through hermitdb. This would be similar to Keepass's composite key, the contents of the entropy file would be taken as input to the kdf giving us a lower bound of len(<entrop_file_content>) bits of entropy (assuming a strong rng was used to generate the entropy file).
-- [ ] compressing op's in the log. Look into zstd (we already have zstd as a dependency from sled).
-- [ ] log compaction
-    1000 edits => 1000 log entries => 1000 commits (in the current git_log implementation).
-    - [ ] Can we compact this log and preserve causality?
-    - [ ] What if we make Op's themselves CRDT's `let op = merge(op1, op2)`?
+- **crypto**
+  - **Reduce our reliance on a strong rng**
+	- If an attacker controls our source of entropy, it increases chance of leak.
+    - [ ] Nonce's are currently generated randomly. Since we have a seperate encryption key per log, and logs are immutable (are they? what if we add compaction?) we should be able to use a counter on log entries as a nonce.
+  - [ ] **reduce our reliance on a strong password.** The users password is the weakest link in our crypto system. To improve security, we can look into adding an `entropy file`: a randomly generated file that is not synced through hermitdb. This would be similar to Keepass's composite key, the contents of the entropy file would be taken as input to the kdf giving us a lower bound of `len(<entrop_file_content>)` bits of entropy (assuming a strong rng was used to generate the entropy file).
+- [ ] **compressing op's in the log**
+	- Look into zstd (we already have zstd as a dependency from sled).
+- [ ] **log compaction**
+    - 1000 edits => 1000 log entries => 1000 commits (in the current git_log implementation).
+    - [ ] Can we compact this log *and* preserve causality?
+    - [ ] can we make `Op`'s themselves CRDT's? `let compacted_op = merge(op1, op2)`
 
 
 
-## Prior Art
+### Prior Art
 
 - https://github.com/ff-notes/ff - a distributed notes app built with CRDT's + Git
 
