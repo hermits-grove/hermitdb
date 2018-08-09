@@ -11,15 +11,13 @@ git2 = "0.7.1"
 ring = "0.13.0-alpha"
 serde = "1.0.70"
 serde_derive = "1.0.70"
-data-encoding = "2.1.1"
-time = "0.1.39"
 tempfile = "3.0.1"
 assert_matches = "1.2.0"
 
 [dependencies.sled]
-# version = "0.15.17"
-features = ["zstd"]
-path = "../sled/crates/sled"
+version = "0.15.17"
+# features = ["zstd"]
+# path = "../sled/crates/sled"
 
 [dependencies.crdts]
 # path = "../rust-crdt"
