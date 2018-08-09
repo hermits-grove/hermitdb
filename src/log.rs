@@ -13,12 +13,12 @@ pub trait TaggedOp<C: CmRDT> {
 }
 
 pub trait LogReplicable<A: Actor, C: CmRDT> {
-    type Op: Debug + TaggedOp<C>;
+    type LoggedOp: Debug + TaggedOp<C>;
     type Remote;
 
-    fn next(&self) -> Result<Option<Self::Op>>;
-    fn ack(&mut self, op: &Self::Op) -> Result<()>;
-    fn commit(&mut self, op: C::Op) -> Result<Self::Op>;
+    fn next(&self) -> Result<Option<Self::LoggedOp>>;
+    fn ack(&mut self, logged_op: &Self::LoggedOp) -> Result<()>;
+    fn commit(&mut self, op: C::Op) -> Result<Self::LoggedOp>;
     fn pull(&mut self, remote: &Self::Remote) -> Result<()>;
     fn push(&self, remote: &mut Self::Remote) -> Result<()>;
 

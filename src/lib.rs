@@ -22,6 +22,7 @@ pub mod db;
 pub mod log;
 pub mod memory_log;
 pub mod git_log;
+pub mod encrypted_git_log;
 pub mod map;
 pub mod data;
 

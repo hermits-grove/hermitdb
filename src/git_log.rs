@@ -3,26 +3,18 @@ extern crate serde;
 
 use std::str::FromStr;
 use std::string::ToString;
-use std::fmt::Debug;
+use std::fmt::{self, Debug};
 use std::marker::PhantomData;
-
-use self::serde::de::DeserializeOwned;
-use self::serde::Serialize;
 
 use git2;
 
 use error::{Error, Result};
 use crdts::{CmRDT, Actor};
 use log::{TaggedOp, LogReplicable};
-use crypto::KeyHierarchy;
 
-
-pub struct Log<A: Actor, C: Debug + CmRDT>
-    where C::Op : DeserializeOwned + Serialize + Eq
-{
+pub struct Log<A: Actor, C: CmRDT> {
     actor: A,
     repo: git2::Repository,
-    log_key: KeyHierarchy,
     phantom_crdt: PhantomData<C>,
 }
 
@@ -43,18 +35,24 @@ pub struct Remote {
 }
 
 #[serde(bound(deserialize = ""))]
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Op<A: Actor, C: Debug + CmRDT + Eq>
-    where C::Op : DeserializeOwned + Serialize + Eq
-{
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoggedOp<A: Actor, C: CmRDT> {
     actor: A,
     oid: Vec<u8>, // the object id of the commit with this op
     op: C::Op
 }
 
-impl<A: Actor, C: Debug + CmRDT + Eq> TaggedOp<C> for Op<A, C>
-    where C::Op : DeserializeOwned + Serialize + Eq
-{
+impl<A: Actor, C: CmRDT> Debug for LoggedOp<A, C> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "LoggedOp {{ actor: {:?}, index: {:?}, op: {:?} }}",
+               self.actor,
+               self.id(),
+               self.op
+        )
+    }
+}
+
+impl<A: Actor, C: CmRDT> TaggedOp<C> for LoggedOp<A, C> {
     type ID = git2::Oid;
 
     fn id(&self) -> Self::ID {
@@ -66,10 +64,12 @@ impl<A: Actor, C: Debug + CmRDT + Eq> TaggedOp<C> for Op<A, C>
     }
 }
 
-impl<A: Actor, C: Debug + CmRDT + Eq> Op<A, C>
-    where C::Op : DeserializeOwned + Serialize + Eq
-{
-    pub fn from_commit(actor: A, repo: &git2::Repository, commit: &git2::Commit) -> Result<Self> {
+impl<A: Actor, C: CmRDT> LoggedOp<A, C> {
+    pub fn actor(&self) -> &A {
+        &self.actor
+    }
+
+    fn from_commit(actor: A, repo: &git2::Repository, commit: &git2::Commit) -> Result<Self> {
         let tree = commit.tree()?;
         let tree_entry = tree.get_name("op")
             .ok_or(Error::LogCommitDoesNotContainOp)?;
@@ -77,19 +77,19 @@ impl<A: Actor, C: Debug + CmRDT + Eq> Op<A, C>
         let blob = repo.find_blob(id)?;
         let bytes = blob.content();
         let op = bincode::deserialize(bytes)?;
-        Ok(Op {
+        Ok(LoggedOp {
             actor: actor,
             oid: commit.id().as_bytes().to_vec(),
             op: op
         })
     }
 
-    pub fn next_from_branches(
+    fn next_from_branches(
         actor: A,
         repo: &git2::Repository,
         unacked: Option<git2::Branch>,
         acked: Option<git2::Branch>
-    ) -> Result<Option<Op<A, C>>> {
+    ) -> Result<Option<LoggedOp<A, C>>> {
         match (unacked, acked) {
             (Some(unacked), Some(acked)) => {
                 let local_unacked_oid = unacked.get().target()
@@ -110,7 +110,7 @@ impl<A: Actor, C: Debug + CmRDT + Eq> Op<A, C>
                         curr_oid = parents[0];
                     }
 
-                    let op = Op::from_commit(actor, &repo, &commit)?;
+                    let op = LoggedOp::from_commit(actor, &repo, &commit)?;
                     Ok(Some(op))
                 } else {
                     Ok(None)
@@ -131,7 +131,7 @@ impl<A: Actor, C: Debug + CmRDT + Eq> Op<A, C>
                     curr_oid = parents[0];
                 }
 
-                let op = Op::from_commit(actor, &repo, &commit)?;
+                let op = LoggedOp::from_commit(actor, &repo, &commit)?;
                 Ok(Some(op))
             },
             (None, Some(_)) => panic!("we have acked ops that were never unacked!"),
@@ -141,21 +141,19 @@ impl<A: Actor, C: Debug + CmRDT + Eq> Op<A, C>
 }
 
 
-impl<A, C> LogReplicable<A, C> for Log<A, C> where
-    A: Actor + FromStr + ToString + Debug,
-    C: Debug + CmRDT + Eq + Serialize + DeserializeOwned, // TODO: why are serde bounds on `C` needed?
-    C::Op : DeserializeOwned + Serialize + Eq
+impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C> where
+    A: Actor + FromStr + ToString
 {
-    type Op = Op<A, C>;
+    type LoggedOp = LoggedOp<A, C>;
     type Remote = Remote;
 
-    fn next(&self) -> Result<Option<Self::Op>> {
+    fn next(&self) -> Result<Option<Self::LoggedOp>> {
         let local_name = format!("actor_{}", self.actor.to_string());
         let local_acked = format!("acked_actor_{}", self.actor.to_string());
 
         let unacked = self.repo.find_branch(&local_name, git2::BranchType::Local);
         let acked = self.repo.find_branch(&local_acked, git2::BranchType::Local);
-        if let Some(op) = Op::next_from_branches(
+        if let Some(op) = LoggedOp::next_from_branches(
             self.actor.clone(),
             &self.repo,
             unacked.ok(),
@@ -189,7 +187,7 @@ impl<A, C> LogReplicable<A, C> for Log<A, C> where
             let tracking_branch = self.repo
                 .find_branch(&format!("actor_{}", actor.to_string()), git2::BranchType::Local);
 
-            let next_op = Op::next_from_branches(
+            let next_op = LoggedOp::next_from_branches(
                 actor,
                 &self.repo,
                 Some(remote_branch),
@@ -203,10 +201,10 @@ impl<A, C> LogReplicable<A, C> for Log<A, C> where
         Ok(None)
     }
 
-    fn ack(&mut self, op: &Self::Op) -> Result<()> {
+    fn ack(&mut self, logged_op: &Self::LoggedOp) -> Result<()> {
         match self.next()? {
             Some(expected) => {
-                if &expected != op {
+                if expected.id() != logged_op.id() {
                     return Err(Error::State("Attempting to ack an op that is not the next op".into()));
                 }
             },
@@ -217,19 +215,19 @@ impl<A, C> LogReplicable<A, C> for Log<A, C> where
             }
         }
 
-        let branch_name: String = if op.actor == self.actor {
-            format!("acked_actor_{}", op.actor.to_string())
+        let branch_name: String = if logged_op.actor == self.actor {
+            format!("acked_actor_{}", logged_op.actor.to_string())
         } else {
-            format!("actor_{}", op.actor.to_string())
+            format!("actor_{}", logged_op.actor.to_string())
         };
 
-        let commit = self.repo.find_commit(op.id())?;
+        let commit = self.repo.find_commit(logged_op.id())?;
         println!("updating commit on {}, to {:?}", branch_name, commit.id());
         self.repo.branch(&branch_name, &commit, true)?;
         Ok(())
     }
 
-    fn commit(&mut self, op: C::Op) -> Result<Self::Op> {
+    fn commit(&mut self, op: C::Op) -> Result<Self::LoggedOp> {
         let name = format!("actor_{}", self.actor.to_string());
         let parent = match self.repo.find_branch(&name, git2::BranchType::Local) {
             Ok(branch) => {
@@ -263,7 +261,7 @@ impl<A, C> LogReplicable<A, C> for Log<A, C> where
         let commit_oid = self.repo
             .commit(Some(&branch_ref), &sig, &sig, "db op", &tree, &parent_commits)?;
         
-        Op::from_commit(
+        LoggedOp::from_commit(
             self.actor.clone(),
             &self.repo,
             &self.repo.find_commit(commit_oid)?
@@ -328,11 +326,11 @@ impl<A, C> LogReplicable<A, C> for Log<A, C> where
     }
 }
 
-impl<A: Actor, C: Debug + CmRDT> Log<A, C>
-    where C::Op : DeserializeOwned + Serialize + Eq
+impl<A, C: CmRDT> Log<A, C>
+    where A: Actor + FromStr + ToString
 {
-    pub fn new(actor: A, repo: git2::Repository, log_key: KeyHierarchy) -> Self {
-        Log { actor, repo, log_key, phantom_crdt: PhantomData }
+    pub fn new(actor: A, repo: git2::Repository) -> Self {
+        Log { actor, repo, phantom_crdt: PhantomData }
     }
 }
 

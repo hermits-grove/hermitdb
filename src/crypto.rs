@@ -22,7 +22,7 @@ pub struct CryptoKey {
     key: [u8; 256 / 8]
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Encrypted{
     pub nonce: [u8; 96/8],
     pub ciphertext: Vec<u8>,
@@ -51,6 +51,10 @@ impl KeyHierarchy {
         KeyHierarchy {
             key: hkdf::extract(&self.key, namespace)
         }
+    }
+
+    pub fn signing_key(&self) -> &hmac::SigningKey {
+        &self.key
     }
 
     pub fn key_for(&self, plaintext_unique_id: &[u8]) -> CryptoKey {
@@ -92,16 +96,17 @@ impl CryptoKey {
         Ok(cryptic)
     }
 
-    pub fn decrypt(&self, Encrypted { nonce, mut ciphertext }: Encrypted) -> Result<Vec<u8>> {
+    pub fn decrypt(&self, encrypted: &Encrypted) -> Result<Vec<u8>> {
         let algo = &aead::CHACHA20_POLY1305;
 
         let key = aead::OpeningKey::new(algo, &self.key)
             .map_err(|_| Error::Crypto("Failed to create an opening key".into()))?;
 
+        let mut ciphertext = encrypted.ciphertext.clone();
         let plain = aead::open_in_place(
             &key,                   // crypto key
-            &nonce,                 // nonce
-            &nonce,                 // ad
+            &encrypted.nonce,       // nonce
+            &encrypted.nonce,       // ad
             0,                      // prefix padding (in bytes) to discard
             &mut ciphertext         // cyphertext (decrypted in place)
         ).map_err(|_| Error::Crypto("Failed to decrypt".into()))?;
@@ -251,7 +256,7 @@ mod test {
         assert_ne!(cryptic.nonce, cryptic2.nonce);           // nonces must differ!
         assert_ne!(cryptic.ciphertext, cryptic2.ciphertext); // ciphertexts must differ!
 
-        let decrypted_msg = key.decrypt(cryptic).unwrap();
+        let decrypted_msg = key.decrypt(&cryptic).unwrap();
         let decrypted_string = String::from_utf8(decrypted_msg).unwrap();
         assert_eq!(decrypted_string, "I kinda like you");
     }
