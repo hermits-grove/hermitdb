@@ -50,14 +50,14 @@ pub enum Data {
     Nil,
     Reg(crdts::MVReg<Prim, Actor>),
     Set(crdts::Orswot<Prim, Actor>),
-    Map(crdts::Map<(Vec<u8>, Kind), Box<Data>, Actor>)
+    Map(crdts::Map<(String, Kind), Box<Data>, Actor>)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op {
     Reg(crdts::mvreg::Op<Prim, Actor>),
     Set(crdts::orswot::Op<Prim, Actor>),
-    Map(crdts::map::Op<(Vec<u8>, Kind), Box<Data>, Actor>)
+    Map(crdts::map::Op<(String, Kind), Box<Data>, Actor>)
 }
 
 impl Default for Data {
@@ -185,7 +185,7 @@ impl Data {
         }
     }
 
-    pub fn map(self) -> Result<crdts::Map<(Vec<u8>, Kind), Box<Data>, Actor>> {
+    pub fn map(self) -> Result<crdts::Map<(String, Kind), Box<Data>, Actor>> {
         match self {
             Data::Nil => Ok(crdts::Map::default()),
             Data::Map(m) => Ok(m),
@@ -310,8 +310,8 @@ impl From<crdts::orswot::Op<Prim, Actor>> for Op {
     }
 }
 
-impl From<crdts::map::Op<(Vec<u8>, Kind), Box<Data>, Actor>> for Op {
-    fn from(op: crdts::map::Op<(Vec<u8>, Kind), Box<Data>, Actor>) -> Self {
+impl From<crdts::map::Op<(String, Kind), Box<Data>, Actor>> for Op {
+    fn from(op: crdts::map::Op<(String, Kind), Box<Data>, Actor>) -> Self {
         Op::Map(op)
     }
 }
