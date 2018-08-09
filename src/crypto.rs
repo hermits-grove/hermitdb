@@ -1,127 +1,124 @@
 extern crate ring;
 
-use std;
-use std::io::{Read, Write};
+use std::fmt::{self, Debug};
 
-use self::ring::{aead, digest, pbkdf2};
+use self::ring::{aead, hmac, hkdf, digest, pbkdf2};
 use self::ring::rand::{SecureRandom, SystemRandom};
 
 use error::{Error, Result};
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct MasterKey([u8; 256 / 8]);
-
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KDF {
     pub pbkdf2_iters: u32,
-    pub salt: [u8; 256 / 8],
-    pub entropy: [u8; 256 / 8]
+    pub salt: [u8; 256 / 8]
 }
 
-impl KDF {
-    pub fn master_key(&self, pass: &[u8]) -> MasterKey {
-        let mut salt: Vec<u8> = Vec::with_capacity(512 / 8);
-        salt.extend_from_slice(&self.entropy);
-        salt.extend_from_slice(&self.salt);
-
-        let mut master_key = MasterKey([0u8; 256 / 8]);
-        pbkdf2::derive(
-            &digest::SHA256,
-            self.pbkdf2_iters,
-            &salt,
-            &pass,
-            &mut master_key.0
-        );
-        master_key
-    }
+pub struct KeyHierarchy {
+    key: hmac::SigningKey
 }
 
-#[derive(Debug)]
-pub struct Session {
-    pub actor: u128,
-    pub master_key: MasterKey
+#[derive(Debug, PartialEq, Eq)]
+pub struct CryptoKey {
+    key: [u8; 256 / 8]
 }
 
-#[derive(Debug, PartialEq)]
-pub struct Plaintext(pub Vec<u8>);
-
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Encrypted{
     pub nonce: [u8; 96/8],
     pub ciphertext: Vec<u8>,
 }
 
-impl Plaintext {
-    pub fn encrypt(&mut self, sess: &Session) -> Result<Encrypted> {
-        // TAI: compress before encrypt
-        let aead_algo = &aead::CHACHA20_POLY1305;
-        let seal_key = aead::SealingKey::new(aead_algo, &sess.master_key.0)
-            .map_err(|_| Error::Crypto("Failed to generate a sealing key".into()))?;
+impl KDF {
+    pub fn derive_root(&self, pass: &[u8]) -> KeyHierarchy {
+        let mut root_key = [0u8; 256 / 8];
 
+        pbkdf2::derive(
+            &digest::SHA256,
+            self.pbkdf2_iters,
+            &self.salt,
+            &pass,
+            &mut root_key
+        );
+
+        let key = hmac::SigningKey::new(&digest::SHA256, &root_key);
+
+        KeyHierarchy { key }
+    }
+}
+
+impl KeyHierarchy {
+    pub fn derive_child(&self, namespace: &[u8]) -> KeyHierarchy {
+        KeyHierarchy {
+            key: hkdf::extract(&self.key, namespace)
+        }
+    }
+
+    pub fn signing_key(&self) -> &hmac::SigningKey {
+        &self.key
+    }
+
+    pub fn key_for(&self, plaintext_unique_id: &[u8]) -> CryptoKey {
+        let mut crypto_key = CryptoKey {
+            key: [0u8; 256 / 8]
+        };
+
+        hkdf::expand(&self.key, plaintext_unique_id, &mut crypto_key.key);
+
+        crypto_key
+    }
+}
+
+impl CryptoKey {
+    pub fn encrypt(&self, plaintext: &[u8]) -> Result<Encrypted> {
+        let algo = &aead::CHACHA20_POLY1305;
 
         let mut cryptic = Encrypted {
             nonce: rand_96()?,
-            ciphertext: Vec::with_capacity(self.0.len() + aead_algo.tag_len())
+            ciphertext: vec![0u8; plaintext.len() + algo.tag_len()]
         };
-        
-        cryptic.ciphertext.extend(&self.0);
-        cryptic.ciphertext.extend(vec![0u8; aead_algo.tag_len()]);
+
+        cryptic.ciphertext.splice(0..plaintext.len(), plaintext.iter().cloned());
+
+        // TODO: sanity check, rm this once you've convinced yourself
+        assert_eq!(&cryptic.ciphertext[0..plaintext.len()], plaintext);
+
+        let key = aead::SealingKey::new(algo, &self.key)
+            .map_err(|_| Error::Crypto("Failed to create a sealing key".into()))?;
 
         aead::seal_in_place(
-            &seal_key,               // key
+            &key,                    // crypto key
             &cryptic.nonce,          // nonce
             &cryptic.nonce,          // ad
-            &mut cryptic.ciphertext, // plaintext
-            seal_key.algorithm().tag_len()
-        ).map_err(|_| Error::Crypto("Failed to encrypt with AEAD".into()))?;
+            &mut cryptic.ciphertext, // plaintext (encrypted in place)
+            algo.tag_len()
+        ).map_err(|_| Error::Crypto("Failed to encrypt".into()))?;
 
         Ok(cryptic)
     }
-}
 
-impl Encrypted {
-    pub fn decrypt(&self, sess: &Session) -> Result<Plaintext> {
-        let aead_algo = &aead::CHACHA20_POLY1305;
-        let opening_key = aead::OpeningKey::new(aead_algo, &sess.master_key.0)
-            .map_err(|_| Error::Crypto("Failed to create key when decrypting".into()))?;
+    pub fn decrypt(&self, encrypted: &Encrypted) -> Result<Vec<u8>> {
+        let algo = &aead::CHACHA20_POLY1305;
 
-        let mut in_out = Vec::with_capacity(self.ciphertext.len());
-        in_out.extend_from_slice(&self.ciphertext);
+        let key = aead::OpeningKey::new(algo, &self.key)
+            .map_err(|_| Error::Crypto("Failed to create an opening key".into()))?;
 
+        let mut ciphertext = encrypted.ciphertext.clone();
         let plain = aead::open_in_place(
-            &opening_key,
-            &self.nonce,
-            &self.nonce,
-            0,
-            &mut in_out
+            &key,                   // crypto key
+            &encrypted.nonce,       // nonce
+            &encrypted.nonce,       // ad
+            0,                      // prefix padding (in bytes) to discard
+            &mut ciphertext         // cyphertext (decrypted in place)
         ).map_err(|_| Error::Crypto("Failed to decrypt".into()))?;
 
-        Ok(Plaintext(plain.to_vec()))
+        Ok(plain.to_vec())
     }
 }
 
-/// Will return Err if entropy_file does not exist
-pub fn read_entropy_file(root: &std::path::Path) -> Result<[u8; 256/8]> {
-    let entropy_filepath = root.join("entropy_file");
-    let mut f = std::fs::File::open(&entropy_filepath)?;
-    if std::fs::metadata(&entropy_filepath)?.len() != 256/8 {
-        return Err(Error::State("entropy_file must contain exactly 256 bits".into()));
+impl Debug for KeyHierarchy {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "KeyHierarchy")
     }
-    let mut entropy_file = [0u8; 256/8];
-    f.read_exact(&mut entropy_file)?;
-    Ok(entropy_file)
-}
-
-/// Will return Err if entropy_file exists
-pub fn create_entropy_file(root: &std::path::Path) -> Result<[u8; 256/8]> {
-    let entropy_filepath = root.join("entropy_file");
-    if entropy_filepath.is_file() {
-        return Err(Error::State("Attempting to create an entropy_file when one exists".into()));
-    }
-
-    let mut f = std::fs::File::create(entropy_filepath)?;
-    let entropy = rand_256()?;
-    f.write_all(&entropy)?;
-    Ok(entropy)
 }
 
 pub fn u32_to_bytes(i: u32) -> [u8; 4] {
@@ -163,76 +160,104 @@ pub fn rand_256() -> Result<[u8; 256/8]> {
 
 #[cfg(test)]
 mod test {
-    extern crate tempfile;
     use super::*;
 
-    #[test]
-    fn entropy_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let dir_path = dir.path().to_owned();
-        let read1 = read_entropy_file(&dir_path);
-        assert!(read1.is_err());
-
-        let create1 = create_entropy_file(&dir_path);
-        assert!(create1.is_ok());
-        let entropy1 = create1.unwrap();
-        
-        let create2 = create_entropy_file(&dir_path);
-        assert!(create2.is_err());
-
-        assert_eq!(entropy1.len(), 256/8);
-
-        let read2 = read_entropy_file(&dir_path);
-        assert!(read2.is_ok());
-
-        let entropy2 = read2.unwrap();
-        assert_eq!(entropy1, entropy2);
+    impl PartialEq for KeyHierarchy {
+        fn eq(&self, other: &Self) -> bool {
+            // we compare key's by signing the 0 byte... for testing it's probably alright
+            hmac::sign(&self.key, &[0u8]).as_ref() == hmac::sign(&other.key, &[0u8]).as_ref()
+        }
     }
 
     #[test]
     fn kdf() {
-        let dir = tempfile::tempdir().unwrap();
-        let dir_path = dir.path().to_owned();
         let kdf = KDF {
             pbkdf2_iters: 1000,
-            salt: rand_256().unwrap(),
-            entropy: create_entropy_file(&dir_path).unwrap()
+            salt: rand_256().unwrap()
         };
 
-        let master_key1 = kdf.master_key("sssshh.. it's a secret".as_bytes());
-        let master_key2 = kdf.master_key("sssshh.. it's a secret".as_bytes());
-        let master_key3 = kdf.master_key("imposter!!".as_bytes());
+        let root_key1 = kdf.derive_root("sssshh.. it's a secret".as_bytes());
+        let root_key2 = kdf.derive_root("sssshh.. it's a secret".as_bytes());
+        let imposter_key = kdf.derive_root("imposter!!".as_bytes());
         
-        assert_eq!(master_key1, master_key2);
-        assert_ne!(master_key1, master_key3);
+        assert_eq!(root_key1, root_key2); // proof: kdf is deterministic
+        assert_ne!(root_key1, imposter_key) // proof: varied password => varied key
+    }
+
+    #[test]
+    fn key_hierarchy() {
+        let kdf = KDF {
+            pbkdf2_iters: 1000,
+            salt: rand_256().unwrap()
+        };
+
+        let root_key = kdf
+            .derive_root("pass".as_bytes());
+        let log_key = root_key
+            .derive_child("log".as_bytes());
+
+        assert_ne!(root_key, log_key);
+
+        let log_key2 = root_key
+            .derive_child("log".as_bytes());
+
+        assert_eq!(log_key, log_key2); // proof: derive_child is deterministic.
+
+        let storage_key = root_key
+            .derive_child("storage".as_bytes());
+
+        assert_ne!(log_key, storage_key); // proof: varied child name => varied key
+
+        let log_msg1_key = log_key
+            .key_for(&[1u8]);
+
+        let log_msg2_key = log_key
+            .key_for(&[2u8]);
+
+        let storage_block_key = storage_key
+            .key_for(&[1u8]);
+
+        assert_ne!(log_msg1_key, log_msg2_key);
+        assert_ne!(storage_block_key, log_msg1_key);
+        assert_ne!(storage_block_key, log_msg2_key);
     }
 
     #[test]
     fn plaintext_encrypt_decrypt() {
-        let dir = tempfile::tempdir().unwrap();
-        let dir_path = dir.path().to_owned();
-        
         let kdf = KDF {
             pbkdf2_iters: 1000,
-            salt: rand_256().unwrap(),
-            entropy: create_entropy_file(&dir_path).unwrap()
+            salt: rand_256().unwrap()
         };
 
-        let sess = Session {
-            actor: 0,
-            master_key: kdf.master_key("do you KNOW who I am??".as_bytes())
-        };
-
-        let mut plain = Plaintext("I kinda like you".as_bytes().to_vec());
-        let encrypted = plain.encrypt(&sess).unwrap();
-        assert_ne!(encrypted.ciphertext, plain.0);
+        let root_key = kdf
+            .derive_root("password".as_bytes());
         
-        let encrypted2 = plain.encrypt(&sess).unwrap();
-        assert_ne!(encrypted.nonce, encrypted2.nonce);
-        assert_ne!(encrypted.ciphertext, encrypted2.ciphertext);
+        let msg = "I kinda like you".as_bytes();
+        let msg_id = [0u8, 1u8];
 
-        let plain2 = encrypted.decrypt(&sess).unwrap();
-        let decrypted_string = String::from_utf8(plain2.0).unwrap();
+        let key = root_key.key_for(&msg_id);
+
+        let cryptic = key
+            .encrypt(&msg)
+            .unwrap();
+
+        // can we do a better check than this?
+        // maybe we can make some test vectors?
+        assert_ne!(cryptic.ciphertext, msg);
+
+        // Our encryption scheme must be probabilistic!
+        //
+        // The same msg encrypted under the same key should produce
+        // different ciphertexts.
+        let cryptic2 = key
+            .encrypt(&msg)
+            .unwrap();
+
+        assert_ne!(cryptic.nonce, cryptic2.nonce);           // nonces must differ!
+        assert_ne!(cryptic.ciphertext, cryptic2.ciphertext); // ciphertexts must differ!
+
+        let decrypted_msg = key.decrypt(&cryptic).unwrap();
+        let decrypted_string = String::from_utf8(decrypted_msg).unwrap();
         assert_eq!(decrypted_string, "I kinda like you");
     }
 

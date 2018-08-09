@@ -8,7 +8,7 @@
 
 The replicated log datastructure has popped up in many distributed systems over the years, we see it in Bitcoin as the blockchain, we see it in systems that rely on distributed logs like Kafka, and of course we see it in Git as the branch commit history.
 
-HermitDB recognizes the whitespread deployment of these logs and will allow users to replicate their data using a log that they provide.
+HermitDB recognizes the widespread deployment of these logs and will allow users to replicate their data using a log that they provide.
 
 If this is all a bit too abstract, the motivating idea is that if you've built an app on HermitDB and I am a user of your app, I can sync the apps data across all of my devices by pointing your app to a Git repo that I control.
 
@@ -28,31 +28,23 @@ fn main() {
 }
 ```
 
-## Motivation
+### If you have some spare attention, please direct it here.
 
-We are now seeing the dangers of centralized data and many of us are looking for and building decentralized alternatives to the tools we use.
+- **crypto**
+  - **Reduce our reliance on a strong rng**
+	- If an attacker controls our source of entropy, it increases chance of leak.
+    - [ ] Nonce's are currently generated randomly. Since we have a seperate encryption key per log, and logs are immutable (are they? what if we add compaction?) we should be able to use a counter on log entries as a nonce.
+  - [ ] **reduce our reliance on a strong password.** The users password is the weakest link in our crypto system. To improve security, we can look into adding an `entropy file`: a randomly generated file that is not synced through hermitdb. This would be similar to Keepass's composite key, the contents of the entropy file would be taken as input to the kdf giving us a lower bound of `len(<entrop_file_content>)` bits of entropy (assuming a strong rng was used to generate the entropy file).
+- [ ] **compressing op's in the log**
+	- Look into zstd (we already have zstd as a dependency from sled).
+- [ ] **log compaction**
+    - 1000 edits => 1000 log entries => 1000 commits (in the current git_log implementation).
+    - [ ] Can we compact this log *and* preserve causality?
+    - [ ] can we make `Op`'s themselves CRDT's? `let compacted_op = merge(op1, op2)`
 
-The larger scale problems seem to be in good hands. Decentralized solutions are popping up everyday for social networks, money, content distribution, online identity and many other hard problems.
 
-<p align="center">
-	But what about the tools to manage your life?
-</p>
 
-Tools like password managers, calendars, contact books and note taking apps. These all help us organize our life. Unfortunatly, we give up our data when we want to sync across our devices.
-
-Developers want to give us an experience where our data follows us around, but the existing infrastructure and tooling push developers in the direction of centralized data.
-<p align="center">
-	This is where HermitDB want's to help out.
-	<br>
-	<br>
-	<i>Tools built with HermitDB give users agency over their data.</i>
-</p>
-	
-## In The Weeds
-
-At it's core, HermitDB is a Key/Value CmRDT store where ops are replicated over a user provided log. Values in the key/value store are themselves also CmRDT's.
-
-## Prior Art
+### Prior Art
 
 - https://github.com/ff-notes/ff - a distributed notes app built with CRDT's + Git
 

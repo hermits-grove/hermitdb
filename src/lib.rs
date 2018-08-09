@@ -8,9 +8,6 @@ pub extern crate sled;
 
 extern crate bincode;
 
-#[macro_use]
-extern crate assert_matches;
-
 #[cfg(test)]
 #[macro_use]
 extern crate quickcheck;
@@ -25,12 +22,12 @@ pub mod db;
 pub mod log;
 pub mod memory_log;
 pub mod git_log;
+pub mod encrypted_git_log;
 pub mod map;
 pub mod data;
 
 pub use error::Error;
 pub use db::DB;
-pub use crypto::{Session, Plaintext, Encrypted};
 pub use remote::Remote;
 // pub use dao::Dao;
 pub use log::{LogReplicable, TaggedOp};
