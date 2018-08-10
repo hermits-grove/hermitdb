@@ -14,9 +14,8 @@ If this is all a bit too abstract, the motivating idea is that if you've built a
 
 ``` rust
 extern crate hermitdb;
-extern crate sled;
 
-use hermitdb::{memory_log, map, DB};
+use hermitdb::{sled, memory_log, map, DB};
 
 fn main() {
 	let actor = 32;
