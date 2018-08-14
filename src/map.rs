@@ -223,8 +223,8 @@ impl<K: Key + Debug, V: Val<A> + Debug, A: Actor> Map<K, V, A> {
     fn apply_deferred(&mut self) -> Result<()> {
         let deferred = self.get_deferred()?;
         // TODO: it would be good to not clear the deferred map if we can avoid it.
-        //       this could be a point of data loss if we fail before we complete
-        //       applying all the deferred removes
+        //       this could be a point of data loss if we have a failure before we
+        //       finish applying all the deferred removes
         self.put_deferred(HashMap::new())?;
         for (clock, keys) in deferred {
             for key in keys {
