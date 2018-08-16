@@ -19,11 +19,11 @@ fn mk_db(actor: Actor) -> DB<memory_log::Log<Actor, db::Map>> {
 fn test_write_read_set() {
     let mut db = mk_db(1);
 
-    assert_matches!(db.get(&("x".as_bytes().to_vec(), Kind::Set)), Ok(None));
+    assert_matches!(db.get(&("x".into(), Kind::Set)), Ok(None));
 
     let dot = db.dot(1).unwrap();
     assert_matches!(
-        db.update(("x".as_bytes().to_vec(), Kind::Set), dot, |data, dot| {
+        db.update(("x", Kind::Set), dot, |data, dot| {
             let set = data.set().unwrap();
             set.add(57.18, dot)
         }),
@@ -31,7 +31,7 @@ fn test_write_read_set() {
     );
 
     assert_eq!(
-        db.get(&("x".as_bytes().to_vec(), Kind::Set)).unwrap()
+        db.get(&("x".into(), Kind::Set)).unwrap()
             .and_then(|entry| entry.val.set().ok())
             .map(|set| set.value()),
         Some(vec![Prim::Float(57.18)])
@@ -45,13 +45,13 @@ fn test_sync() {
     let mut db_2 = mk_db(2);
 
     let dot_1 = db_1.dot(1).unwrap();
-    db_1.update(("x".as_bytes().to_vec(), Kind::Reg), dot_1, |d, dot| {
+    db_1.update(("x", Kind::Reg), dot_1, |d, dot| {
         let reg = d.reg().unwrap();
         reg.set("this is a reg for value 'x'", dot)
     }).unwrap();
 
     let dot_2 = db_2.dot(2).unwrap();
-    db_2.update(("y".as_bytes().to_vec(), Kind::Reg), dot_2, |d, dot| {
+    db_2.update(("y", Kind::Reg), dot_2, |d, dot| {
         let reg = d.reg().unwrap();
         reg.set("this is a reg for value 'y'", dot)
     }).unwrap();
@@ -61,25 +61,25 @@ fn test_sync() {
     db_1.sync(&mut remote).unwrap();
 
     assert_eq!(
-        db_1.get(&("x".as_bytes().to_vec(), Kind::Reg)).unwrap()
+        db_1.get(&("x".into(), Kind::Reg)).unwrap()
             .and_then(|entry| entry.val.reg().ok())
             .map(|reg| reg.get_owned().0),
         Some(vec!["this is a reg for value 'x'".into()])
     );
     assert_eq!(
-        db_1.get(&("y".as_bytes().to_vec(), Kind::Reg)).unwrap()
+        db_1.get(&("y".into(), Kind::Reg)).unwrap()
             .and_then(|data| data.val.reg().ok())
             .map(|reg| reg.get_owned().0),
         Some(vec!["this is a reg for value 'y'".into()])
     );
     assert_eq!(
-        db_2.get(&("x".as_bytes().to_vec(), Kind::Reg)).unwrap()
+        db_2.get(&("x".into(), Kind::Reg)).unwrap()
             .and_then(|data| data.val.reg().ok())
             .map(|reg| reg.get_owned().0),
         Some(vec!["this is a reg for value 'x'".into()])
     );
     assert_eq!(
-        db_2.get(&("y".as_bytes().to_vec(), Kind::Reg)).unwrap()
+        db_2.get(&("y".into(), Kind::Reg)).unwrap()
             .and_then(|data| data.val.reg().ok())
             .map(|reg| reg.get_owned().0),
         Some(vec!["this is a reg for value 'y'".into()])
