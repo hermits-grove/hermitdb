@@ -149,6 +149,15 @@ pub fn rand_96() -> Result<[u8; 96/8]> {
     Ok(buf)
 }
 
+pub fn rand_128() -> Result<[u8; 128/8]> {
+    let mut buf = [0u8; 128/8];
+    // TAI: Should this rng live in a session so we don't have to recreate it each time?
+    SystemRandom::new()
+        .fill(&mut buf)
+        .map_err(|_| Error::Crypto("Failed to generate 128 bits of random".into()))?;
+    Ok(buf)
+}
+
 pub fn rand_256() -> Result<[u8; 256/8]> {
     let mut buf = [0u8; 256/8];
     // TAI: Should this rng live in a session so we don't have to recreate it each time?

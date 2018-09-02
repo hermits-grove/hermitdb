@@ -6,6 +6,7 @@ use data::{Data, Op, Actor, Kind};
 use log::{TaggedOp, LogReplicable};
 
 pub type Map = map::Map<(String, Kind), Data, Actor>;
+pub type Entry = map::Entry<Data, Actor>;
 
 pub struct DB<L: LogReplicable<Actor, Map>> {
     log: L,
@@ -21,7 +22,7 @@ impl<L: LogReplicable<Actor, Map>> DB<L> {
         self.map.dot(actor)
     }
 
-    pub fn get(&self, key: &(String, Kind)) -> Result<Option<map::Entry<Data, Actor>>> {
+    pub fn get(&self, key: &(String, Kind)) -> Result<Option<Entry>> {
         self.map.get(key)
     }
 

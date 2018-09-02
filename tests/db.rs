@@ -4,6 +4,8 @@ extern crate tempfile;
 #[macro_use]
 extern crate assert_matches;
 
+use std::collections::BTreeMap;
+
 use hermitdb::data::{Prim, Kind, Actor};
 use hermitdb::{memory_log, map, sled, db, DB};
 
@@ -39,6 +41,57 @@ fn test_write_read_set() {
 }
 
 #[test]
+fn test_iter() {
+    let actor = 1;
+    let mut db = mk_db(actor);
+
+    let dot1 = db.dot(actor).unwrap();
+    db.update(("x", Kind::Reg), dot1.clone(), |data, d| {
+        let reg = data.reg().unwrap();
+        reg.set("x's val", d)
+    }).unwrap();
+
+    let dot2 = db.dot(actor).unwrap();
+    db.update(("y", Kind::Reg), dot2.clone(), |data, d| {
+        let reg = data.reg().unwrap();
+        reg.set("y's val", d)
+    }).unwrap();
+
+    let dot3 = db.dot(actor).unwrap();
+    db.update(("z", Kind::Reg), dot3.clone(), |data, d| {
+        let reg = data.reg().unwrap();
+        reg.set("z's val", d)
+    }).unwrap();
+
+    let items: BTreeMap<(String, Kind), db::Entry> = db.iter()
+        .map(|opt| opt.unwrap())
+        .collect();
+
+    assert_eq!(items.len(), 3);
+    assert_eq!(
+        items.get(&("x".into(), Kind::Reg))
+            .cloned()
+            .and_then(|e| e.val.reg().ok())
+            .map(|r| r.get_owned()),
+        Some((vec!["x's val".into()], dot1.into()))
+    );
+    assert_eq!(
+        items.get(&("y".into(), Kind::Reg))
+            .cloned()
+            .and_then(|e| e.val.reg().ok())
+            .map(|r| r.get_owned()),
+        Some((vec!["y's val".into()], dot2.into()))
+    );
+    assert_eq!(
+        items.get(&("z".into(), Kind::Reg))
+            .cloned()
+            .and_then(|e| e.val.reg().ok())
+            .map(|r| r.get_owned()),
+        Some((vec!["z's val".into()], dot3.into()))
+    );
+}
+
+#[test]
 fn test_sync() {
     let mut remote = memory_log::Log::new(0);
     let mut db_1 = mk_db(1);
@@ -68,19 +121,19 @@ fn test_sync() {
     );
     assert_eq!(
         db_1.get(&("y".into(), Kind::Reg)).unwrap()
-            .and_then(|data| data.val.reg().ok())
+            .and_then(|entry| entry.val.reg().ok())
             .map(|reg| reg.get_owned().0),
         Some(vec!["this is a reg for value 'y'".into()])
     );
     assert_eq!(
         db_2.get(&("x".into(), Kind::Reg)).unwrap()
-            .and_then(|data| data.val.reg().ok())
+            .and_then(|entry| entry.val.reg().ok())
             .map(|reg| reg.get_owned().0),
         Some(vec!["this is a reg for value 'x'".into()])
     );
     assert_eq!(
         db_2.get(&("y".into(), Kind::Reg)).unwrap()
-            .and_then(|data| data.val.reg().ok())
+            .and_then(|entry| entry.val.reg().ok())
             .map(|reg| reg.get_owned().0),
         Some(vec!["this is a reg for value 'y'".into()])
     );

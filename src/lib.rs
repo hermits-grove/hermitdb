@@ -25,3 +25,4 @@ pub mod encrypted_git_log;
 pub use error::Error;
 pub use db::DB;
 pub use log::{LogReplicable, TaggedOp};
+pub use data::{Data, Prim, Kind};
