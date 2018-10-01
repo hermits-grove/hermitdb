@@ -21,7 +21,7 @@ fn main() {
     let actor = 32;
     let config = sled::ConfigBuilder::new().temporary(true).build();
     let tree = sled::Tree::start(config).unwrap();
-    // use an in memory log to for testing
+    // use an in memory log for testing
     let log = memory_log::Log::new(actor);
     let map = map::Map::new(tree);
     let db = DB::new(log, map);
