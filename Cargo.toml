@@ -20,9 +20,8 @@ version = "0.15.17"
 # path = "../sled/crates/sled"
 
 [dependencies.crdts]
-# path = "../rust-crdt"
-git = "https://github.com/davidrusu/rust-crdt"
-rev = "d34de33d1f464512f7df1f6e7746848ddd363df3"
+git = "https://github.com/spacejam/rust-crdt"
+rev = "d87b045adbff3ddacc89d576ebdc2757371d0d90"
 
 [dependencies.bincode]
 version = "1.0.1"

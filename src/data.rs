@@ -1,10 +1,10 @@
-use std::cmp;
 use crdts::{self, CvRDT, CmRDT, Causal};
 use error::{Error, Result};
-
+use std::hash::{Hash, Hasher};
+use std::mem::transmute;
 pub type Actor = u128;
 
-#[derive(Debug, Clone, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Prim {
     Nil,
     Float(f64),
@@ -15,14 +15,17 @@ pub enum Prim {
 
 impl Eq for Prim {}
 
-impl Ord for Prim {
-    fn cmp(&self, other: &Self) -> cmp::Ordering {
-        match (self, other) {
-            (Prim::Int(a), Prim::Int(b)) => a.cmp(&b),
-            (Prim::Str(a), Prim::Str(b)) => a.cmp(&b),
-            (Prim::Blob(a), Prim::Blob(b)) => a.cmp(&b),
-            // TAI: we panic when we compare with NaN. is this expected behaviour?
-            (a, b) => a.partial_cmp(&b).unwrap()
+impl Hash for Prim {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Prim::Nil => 0u8.hash(state),
+            Prim::Float(f) => unsafe {
+                let f_as_u: u64 = transmute(f);
+                f_as_u.hash(state)
+            },
+            Prim::Int(i) => i.hash(state),
+            Prim::Str(s) => s.hash(state),
+            Prim::Blob(b) => b.hash(state)
         }
     }
 }
@@ -67,12 +70,9 @@ impl Default for Data {
 }
 
 impl CvRDT for Data {
-    type Error = Error;
-
-    fn merge(&mut self, other: &Self) -> Result<()> {
+    fn merge(&mut self, other: &Self) {
         if &mut Data::Nil == self {
-            *self = other.clone();
-            return Ok(());
+            *self = other.clone()
         }
 
         // compute kinds here in case the match falls to error case.
@@ -80,58 +80,51 @@ impl CvRDT for Data {
         let kind = self.kind();
         let other_kind = other.kind();
         match (self, other) {
-            (_, Data::Nil) => Ok(()),
-            (Data::Reg(a), Data::Reg(b)) => {
-                a.merge(b)?;
-                Ok(())
-            },
-            (Data::Set(a), Data::Set(b)) => {
-                a.merge(&b)?;
-                Ok(())
-            },
-            (Data::Map(a), Data::Map(b)) => {
-                a.merge(&b)?;
-                Ok(())
-            },
+            (_, Data::Nil) => {/* nothing to do */},
+            (Data::Reg(a), Data::Reg(b)) => a.merge(b),
+            (Data::Set(a), Data::Set(b)) => a.merge(b),
+            (Data::Map(a), Data::Map(b)) => a.merge(b),
             _ => {
-                return Err(Error::UnexpectedKind(kind, other_kind));
+                // If this ever happens, we've violated our invariants, we can't recover.
+                // TAI: can we move this invariant to the type level some how?
+                panic!("Merge failed: invalid kinds {:?}, {:?}", kind, other_kind);
             }
         }
     }
 }
 
 impl CvRDT for Box<Data> {
-    type Error = Error;
-        
-    fn merge(&mut self, other: &Self) -> Result<()> {
+    fn merge(&mut self, other: &Self) {
         Data::merge(self, other)
     }
 }
 
 impl CmRDT for Data {
-    type Error = Error;
     type Op = Op;
 
-    fn apply(&mut self, op: &Self::Op) -> Result<()> {
+    fn apply(&mut self, op: &Self::Op) {
         if &mut Data::Nil == self {
             *self = op.kind().default_data();
         }
         let kind = self.kind();
         let op_kind = op.kind();
         match (self, op) {
-            (Data::Reg(crdt), Op::Reg(op)) => crdt.apply(op).map_err(|e| e.into()),
-            (Data::Set(crdt), Op::Set(op)) => crdt.apply(op).map_err(|e| e.into()),
-            (Data::Map(crdt), Op::Map(op)) => crdt.apply(op).map_err(|e| e.into()),
-            _ => Err(Error::UnexpectedKind(kind, op_kind))
+            (Data::Reg(crdt), Op::Reg(op)) => crdt.apply(op),
+            (Data::Set(crdt), Op::Set(op)) => crdt.apply(op),
+            (Data::Map(crdt), Op::Map(op)) => crdt.apply(op),
+            _ => {
+                // If this ever happens, we've violated our invariants, we can't recover.
+                // TAI: can we move this to the type level some how?
+                panic!("Apply failed: invalid kinds {:?}, {:?}", kind, op_kind);
+            }
         }   
     }
 }
 
 impl CmRDT for Box<Data> {
-    type Error = Error;
     type Op = Box<Op>;
 
-    fn apply(&mut self, op: &Self::Op) -> Result<()> {
+    fn apply(&mut self, op: &Self::Op) {
         Data::apply(self, op)
     }
 }
@@ -163,32 +156,32 @@ impl Data {
         }
     }
 
-    pub fn nil(self) -> Result<()> {
+    pub fn to_nil(&self) -> Result<()> {
         match self {
             Data::Nil => Ok(()),
             other => Err(Error::UnexpectedKind(Kind::Nil, other.kind()))
         }
     }
-    pub fn reg(self) -> Result<crdts::MVReg<Prim, Actor>> {
+    pub fn to_reg(&self) -> Result<crdts::MVReg<Prim, Actor>> {
         match self {
             Data::Nil => Ok(crdts::MVReg::default()),
-            Data::Reg(r) => Ok(r),
+            Data::Reg(r) => Ok(r.clone()),
             other => Err(Error::UnexpectedKind(Kind::Reg, other.kind()))
         }
     }
 
-    pub fn set(self) -> Result<crdts::Orswot<Prim, Actor>> {
+    pub fn to_set(&self) -> Result<crdts::Orswot<Prim, Actor>> {
         match self {
             Data::Nil => Ok(crdts::Orswot::default()),
-            Data::Set(s) => Ok(s),
+            Data::Set(s) => Ok(s.clone()),
             other => Err(Error::UnexpectedKind(Kind::Set, other.kind()))
         }
     }
 
-    pub fn map(self) -> Result<crdts::Map<(String, Kind), Box<Data>, Actor>> {
+    pub fn to_map(&self) -> Result<crdts::Map<(String, Kind), Box<Data>, Actor>> {
         match self {
             Data::Nil => Ok(crdts::Map::default()),
-            Data::Map(m) => Ok(m),
+            Data::Map(m) => Ok(m.clone()),
             other => Err(Error::UnexpectedKind(Kind::Map, other.kind()))
         }
     }
@@ -205,37 +198,37 @@ impl Prim {
         }
     }
 
-    pub fn nil(self) -> Result<()> {
+    pub fn to_nil(&self) -> Result<()> {
         match self {
             Prim::Nil => Ok(()),
             other => Err(Error::UnexpectedKind(Kind::Nil, other.kind()))
         }
     }
 
-    pub fn float(self) -> Result<f64> {
+    pub fn to_float(&self) -> Result<f64> {
         match self {
-            Prim::Float(p) => Ok(p),
+            Prim::Float(p) => Ok(*p),
             other => Err(Error::UnexpectedKind(Kind::Float, other.kind()))
         }
     }
 
-    pub fn int(self) -> Result<i64> {
+    pub fn to_int(&self) -> Result<i64> {
         match self {
-            Prim::Int(p) => Ok(p),
+            Prim::Int(p) => Ok(*p),
             other => Err(Error::UnexpectedKind(Kind::Int, other.kind()))
         }
     }
 
-    pub fn str(self) -> Result<String> {
+    pub fn to_str(&self) -> Result<String> {
         match self {
-            Prim::Str(p) => Ok(p),
+            Prim::Str(p) => Ok(p.clone()),
             other => Err(Error::UnexpectedKind(Kind::Str, other.kind()))
         }
     }
 
-    pub fn blob(self) -> Result<Vec<u8>> {
+    pub fn to_blob(&self) -> Result<Vec<u8>> {
         match self {
-            Prim::Blob(p) => Ok(p),
+            Prim::Blob(p) => Ok(p.clone()),
             other => Err(Error::UnexpectedKind(Kind::Blob, other.kind()))
         }
     }

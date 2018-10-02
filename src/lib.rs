@@ -8,10 +8,6 @@ pub extern crate sled;
 
 extern crate bincode;
 
-#[cfg(test)]
-#[macro_use]
-extern crate quickcheck;
-
 pub mod error;
 pub mod crypto;
 pub mod db;

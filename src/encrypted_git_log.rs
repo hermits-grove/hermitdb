@@ -14,7 +14,7 @@ use std::marker::PhantomData;
 use git2;
 use self::ring::hmac;
 
-use error::{Error, Result};
+use error::{Result};
 use crdts::{CmRDT, Actor};
 use log::{TaggedOp, LogReplicable};
 use crypto::{KeyHierarchy, Encrypted};
@@ -59,9 +59,8 @@ impl<A: Actor, C: CmRDT> Debug for LoggedOp<A, C> {
 
 impl<C: CmRDT> CmRDT for EncryptedCRDT<C> {
     type Op = EncryptedOp;
-    type Error = Error;
 
-    fn apply(&mut self, _op: &Self::Op) -> Result<()> {
+    fn apply(&mut self, _op: &Self::Op) {
         panic!("this should never be called");
     }
 }

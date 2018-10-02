@@ -30,34 +30,34 @@ impl Arbitrary for OpVec {
         for _ in 0..num_ops {
             let die_roll: u8 = g.gen();
             let key = g.gen();
+            let read_ctx = map.get(&key);
+            let add_ctx = read_ctx.derive_add_ctx(actor.clone());
             let op = match die_roll % 3 {
                 0 => {
                     // update Orswot
-                    map.update(key, map.dot(actor.clone()), |set, dot| {
+                    map.update(key, add_ctx, |set, ctx| {
                         let die_roll: u8 = g.gen();
                         let member = g.gen();
                         match die_roll % 2 {
-                            0 => set.add(member, dot),
+                            0 => set.add(member, ctx),
                             _ => {
-                                let ctx = set.context(&member);
-                                set.remove(member, ctx)
+                                let rm_ctx = set.contains(&member).derive_rm_ctx();
+                                set.remove(member, rm_ctx)
                             }
                         }
                     })
                 },
                 1 => {
                     // rm
-                    let ctx = map.get(&key)
-                        .map(|(_, c)| c)
-                        .unwrap_or(hermitdb::crdts::VClock::new());
-                    map.rm(key, ctx)
+                    let rm_ctx = map.get(&key).derive_rm_ctx();
+                    map.rm(key, rm_ctx)
                 },
                 _ => {
                     // nop
                     map::Op::Nop
                 }
             };
-            map.apply(&op).unwrap();
+            map.apply(&op);
             ops.push(op);
         }
         OpVec(actor, ops)
@@ -86,13 +86,13 @@ fn p2p_converge<L: LogReplicable<TActor, TMap>>(
 
     for op in a_ops {
         let tagged_op = a_log.commit(op).unwrap();
-        assert_matches!(a_map.apply(tagged_op.op()), Ok(()));
+        a_map.apply(tagged_op.op());
         assert_matches!(a_log.ack(&tagged_op), Ok(()));
     }
 
     for op in b_ops {
         let tagged_op = b_log.commit(op).unwrap();
-        assert_eq!(b_map.apply(tagged_op.op()), Ok(()));
+        b_map.apply(tagged_op.op());
         assert_matches!(b_log.ack(&tagged_op), Ok(()));
     }
 
@@ -103,12 +103,12 @@ fn p2p_converge<L: LogReplicable<TActor, TMap>>(
     assert_matches!(a_log.pull(&mut remote), Ok(_));
 
     while let Some(tagged_op) = a_log.next().unwrap() {
-        assert_matches!(a_map.apply(tagged_op.op()), Ok(()));
+        a_map.apply(tagged_op.op());
         assert_matches!(a_log.ack(&tagged_op), Ok(()));
     }
 
     while let Some(tagged_op) = b_log.next().unwrap() {
-        assert_matches!(b_map.apply(tagged_op.op()), Ok(()));
+        b_map.apply(tagged_op.op());
         assert_matches!(b_log.ack(&tagged_op), Ok(()));
     }
 
