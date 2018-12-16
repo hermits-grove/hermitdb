@@ -1,27 +1,23 @@
 /// An Encrypted Git Log
-///
 /// Implementation wraps the unencypted git log with an encryption layer.
-
-extern crate bincode;
-extern crate serde;
-extern crate ring;
-
 use std::str::FromStr;
 use std::string::ToString;
 use std::fmt::{self, Debug};
 use std::marker::PhantomData;
 
-use git2;
-use self::ring::hmac;
+use serde_derive::{Serialize, Deserialize};
 
-use error::{Result};
+use git2;
+use ring::hmac;
 use crdts::{CmRDT, Actor};
-use log::{TaggedOp, LogReplicable};
-use crypto::{KeyHierarchy, Encrypted};
-use git_log;
+
+use crate::error::{Result};
+use crate::crypto::{KeyHierarchy, Encrypted};
+use crate::log::{TaggedOp, LogReplicable};
+use crate::git_log;
 
 struct EncryptedCRDT<C: CmRDT> {
-    phantom_crdt: PhantomData<C>,
+    phantom_crdt: PhantomData<C>
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,8 +28,8 @@ struct EncryptedOp {
 
 unsafe impl Send for EncryptedOp {}
 
-pub struct Log<A, C: CmRDT> where
-    A: Actor + FromStr + ToString
+pub struct Log<A: Actor, C: CmRDT>
+    where C::Op: serde::Serialize + serde::de::DeserializeOwned
 {
     root_key: KeyHierarchy,
     actor_key: KeyHierarchy,
@@ -41,12 +37,16 @@ pub struct Log<A, C: CmRDT> where
 }
 
 
-pub struct LoggedOp<A: Actor, C: CmRDT> {
+pub struct LoggedOp<A: Actor, C: CmRDT>
+    where C::Op: serde::Serialize + serde::de::DeserializeOwned
+{
     encrypted_logged_op: git_log::LoggedOp<A, EncryptedCRDT<C>>,
     plaintext_op: C::Op
 }
 
-impl<A: Actor, C: CmRDT> Debug for LoggedOp<A, C> {
+impl<A: Actor, C: CmRDT> Debug for LoggedOp<A, C>
+    where C::Op: serde::Serialize + serde::de::DeserializeOwned
+{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -57,7 +57,9 @@ impl<A: Actor, C: CmRDT> Debug for LoggedOp<A, C> {
     }
 }
 
-impl<C: CmRDT> CmRDT for EncryptedCRDT<C> {
+impl<C: CmRDT> CmRDT for EncryptedCRDT<C>
+    where C::Op: serde::Serialize + serde::de::DeserializeOwned
+{
     type Op = EncryptedOp;
 
     fn apply(&mut self, _op: &Self::Op) {
@@ -66,7 +68,9 @@ impl<C: CmRDT> CmRDT for EncryptedCRDT<C> {
 }
 
 impl EncryptedOp {
-    fn encrypt<C: CmRDT>(op: &C::Op, root: &KeyHierarchy) -> Result<Self> {
+    fn encrypt<C: CmRDT>(op: &C::Op, root: &KeyHierarchy) -> Result<Self>
+        where C::Op: serde::Serialize + serde::de::DeserializeOwned
+    {
         let bytes = bincode::serialize(&op)?;
 
         let signature = hmac::sign(
@@ -81,7 +85,9 @@ impl EncryptedOp {
         })
     }
 
-    fn decrypt<C: CmRDT>(&self, root: &KeyHierarchy) -> Result<C::Op> {
+    fn decrypt<C: CmRDT>(&self, root: &KeyHierarchy) -> Result<C::Op>
+        where C::Op: serde::Serialize + serde::de::DeserializeOwned
+    {
         let crypto_key = root.key_for(&self.sig);
         let bytes = crypto_key.decrypt(&self.op)?;
         let op = bincode::deserialize(&bytes)?;
@@ -89,7 +95,9 @@ impl EncryptedOp {
     }
 }
 
-impl<A: Actor, C: CmRDT> TaggedOp<C> for LoggedOp<A, C> {
+impl<A: Actor, C: CmRDT> TaggedOp<C> for LoggedOp<A, C>
+    where C::Op: serde::Serialize + serde::de::DeserializeOwned
+{
     type ID = <git_log::LoggedOp<A, C> as TaggedOp<C>>::ID;
 
     fn id(&self) -> Self::ID {
@@ -101,8 +109,9 @@ impl<A: Actor, C: CmRDT> TaggedOp<C> for LoggedOp<A, C> {
     }
 }
 
-impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C> where
-    A: Actor + FromStr + ToString
+impl<A: Actor, C: CmRDT> LogReplicable<A, C> for Log<A, C>
+    where C::Op: serde::Serialize + serde::de::DeserializeOwned,
+          A: Actor + ToString + FromStr + serde::Serialize
 {
     type LoggedOp = LoggedOp<A, C>;
     type Remote = git_log::Remote;
@@ -156,8 +165,9 @@ impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C> where
     }
 }
 
-impl<A, C: CmRDT> Log<A, C> where
-    A: Actor + FromStr + ToString
+impl<A, C: CmRDT> Log<A, C>
+    where C::Op: serde::Serialize + serde::de::DeserializeOwned,
+          A: Actor + serde::Serialize + serde::de::DeserializeOwned
 {
     pub fn new(actor: A, repo: git2::Repository, root_key: KeyHierarchy) -> Self {
         let actor_bytes = bincode::serialize(&actor).unwrap();

@@ -1,13 +1,15 @@
-extern crate hermitdb;
-extern crate tempfile;
-
-#[macro_use]
-extern crate assert_matches;
-
 use std::collections::BTreeMap;
 
-use hermitdb::{crdts, data::{Prim, Data, Kind, Actor}};
-use hermitdb::{memory_log, map, sled, db, DB};
+use sled;
+use assert_matches::assert_matches;
+use hermitdb::{
+    data::{Prim, Data, Kind, Actor},
+    crdts,
+    memory_log,
+    map,
+    db,
+    DB
+};
 
 fn mk_db(actor: Actor) -> DB<memory_log::Log<Actor, db::Map>> {
     let config = sled::ConfigBuilder::new().temporary(true).build();
@@ -35,7 +37,7 @@ fn test_write_read_set() {
     assert_eq!(
         db.get(&("x".into(), Kind::Set)).unwrap().val
             .and_then(|val| val.to_set().ok())
-            .map(|set| set.value().val),
+            .map(|set| set.read().val),
         Some(vec![Prim::Int(57)].into_iter().collect())
     );
 }
@@ -48,19 +50,19 @@ fn test_iter() {
     let add_ctx = db.get(&("x".into(), Kind::Reg)).unwrap().derive_add_ctx(actor);
     db.update(("x", Kind::Reg), add_ctx, |data, ctx| {
         let reg = data.to_reg().unwrap();
-        reg.set("x's val", ctx)
+        reg.write("x's val", ctx)
     }).unwrap();
 
     let add_ctx = db.get(&("y".into(), Kind::Reg)).unwrap().derive_add_ctx(actor);
     db.update(("y", Kind::Reg), add_ctx, |data, ctx| {
         let reg = data.to_reg().unwrap();
-        reg.set("y's val", ctx)
+        reg.write("y's val", ctx)
     }).unwrap();
 
     let add_ctx = db.get(&("z".into(), Kind::Reg)).unwrap().derive_add_ctx(actor);
     db.update(("z", Kind::Reg), add_ctx, |data, ctx| {
         let reg = data.to_reg().unwrap();
-        reg.set("z's val", ctx)
+        reg.write("z's val", ctx)
     }).unwrap();
 
     let items: BTreeMap<(String, Kind), crdts::ReadCtx<Data, Actor>> = db.iter().unwrap()
@@ -100,13 +102,13 @@ fn test_sync() {
     let add_ctx = db_1.get(&("x".into(), Kind::Reg)).unwrap().derive_add_ctx(1);
     db_1.update(("x", Kind::Reg), add_ctx, |d, ctx| {
         let reg = d.to_reg().unwrap();
-        reg.set("this is a reg for value 'x'", ctx)
+        reg.write("this is a reg for value 'x'", ctx)
     }).unwrap();
 
     let add_ctx = db_2.get(&("y".into(), Kind::Reg)).unwrap().derive_add_ctx(2);
     db_2.update(("y", Kind::Reg), add_ctx, |d, ctx| {
         let reg = d.to_reg().unwrap();
-        reg.set("this is a reg for value 'y'", ctx)
+        reg.write("this is a reg for value 'y'", ctx)
     }).unwrap();
 
     db_1.sync(&mut remote).unwrap();

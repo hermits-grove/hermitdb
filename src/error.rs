@@ -1,10 +1,6 @@
-extern crate git2;
-extern crate bincode;
-extern crate crdts;
-extern crate sled;
-
 use std::{self, fmt};
-use data::Kind;
+
+use crate::data::Kind;
 
 pub type Result<T> = std::result::Result<T, Error>;
 

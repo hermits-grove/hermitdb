@@ -1,11 +1,10 @@
-extern crate ring;
-
 use std::fmt::{self, Debug};
 
-use self::ring::{aead, hmac, hkdf, digest, pbkdf2};
-use self::ring::rand::{SecureRandom, SystemRandom};
+use serde_derive::{Serialize, Deserialize};
+use ring::{aead, hmac, hkdf, digest, pbkdf2};
+use ring::rand::{SecureRandom, SystemRandom};
 
-use error::{Error, Result};
+use crate::error::{Error, Result};
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KDF {

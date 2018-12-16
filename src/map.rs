@@ -4,26 +4,22 @@ use std::collections::{HashMap, BTreeSet};
 
 use bincode;
 use sled;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
-
-use error::{Error, Result};
+use serde_derive::{Serialize, Deserialize};
 use crdts::{Causal, CvRDT, CmRDT, VClock, Dot, Actor, ReadCtx, AddCtx, RmCtx};
 
+use crate::error::{Error, Result};
+
 /// Key Trait alias to reduce redundancy in type decl.
-pub trait Key: Debug + Ord + Clone + Send + Serialize + DeserializeOwned {}
-impl<T: Debug + Ord + Clone + Send + Serialize + DeserializeOwned> Key for T {}
+pub trait Key: Debug + Ord + Clone + Send {}
+impl<T: Debug + Ord + Clone + Send> Key for T {}
 
 /// Val Trait alias to reduce redundancy in type decl.
 pub trait Val<A: Actor>
-    : Debug + Default + Clone + Send + Serialize + DeserializeOwned
-    + Causal<A> + CmRDT + CvRDT
+    : Debug + Default + Clone + Send + Causal<A> + CmRDT + CvRDT
 {}
 
-impl<A, T> Val<A> for T where
-    A: Actor,
-    T: Debug + Default + Clone + Send + Serialize + DeserializeOwned
-    + Causal<A> + CmRDT + CvRDT
+impl<A: Actor, T> Val<A> for T where
+    T: Debug + Default + Clone + Send + Causal<A> + CmRDT + CvRDT
 {}
 
 #[derive(Debug)]
@@ -36,7 +32,6 @@ pub struct Map<K: Key, V: Val<A>, A: Actor> {
     phantom_actor: PhantomData<A>
 }
 
-#[serde(bound(deserialize = ""))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry<V: Val<A>, A: Actor> {
     // The entry clock tells us which actors edited this entry.
@@ -54,7 +49,34 @@ pub struct Iter<'a, K: Key, V: Val<A>, A: Actor> {
     phantom_actor: PhantomData<A>
 }
 
-impl<'a, K: Key, V: Val<A>, A: Actor> Iterator for Iter<'a, K, V, A> {
+/// Operations which can be applied to the Map CRDT
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Op<K: Key, V: Val<A>, A: Actor> {
+    /// No change to the CRDT
+    Nop,
+    /// Remove a key from the map
+    Rm {
+        /// Remove context
+        clock: VClock<A>,
+        /// Key to remove
+        key: K
+    },
+    /// Update an entry in the map
+    Up {
+        /// Update context
+        dot: Dot<A>,
+        /// Key of the value to update
+        key: K,
+        /// The operation to apply on the value under `key`
+        op: V::Op
+    }
+}
+
+impl<'a, K, V, A> Iterator for Iter<'a, K, V, A>
+    where K: Key + serde::de::DeserializeOwned,
+          A: Actor + serde::de::DeserializeOwned,
+          V: Val<A> + serde::de::DeserializeOwned
+{
     type Item = Result<(K, ReadCtx<V, A>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -78,31 +100,11 @@ impl<'a, K: Key, V: Val<A>, A: Actor> Iterator for Iter<'a, K, V, A> {
     }
 }
 
-/// Operations which can be applied to the Map CRDT
-#[serde(bound(deserialize = ""))]
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Op<K: Key, V: Val<A>, A: Actor> {
-    /// No change to the CRDT
-    Nop,
-    /// Remove a key from the map
-    Rm {
-        /// Remove context
-        clock: VClock<A>,
-        /// Key to remove
-        key: K
-    },
-    /// Update an entry in the map
-    Up {
-        /// Update context
-        dot: Dot<A>,
-        /// Key of the value to update
-        key: K,
-        /// The operation to apply on the value under `key`
-        op: V::Op
-    }
-}
-
-impl<K: Key + Debug, V: Val<A> + Debug, A: Actor> CmRDT for Map<K, V, A> {
+impl<K, V, A> CmRDT for Map<K, V, A>
+    where K: Key + Debug + serde::Serialize + serde::de::DeserializeOwned,
+          A: Actor + serde::Serialize + serde::de::DeserializeOwned,
+          V: Val<A> + Debug + serde::Serialize + serde::de::DeserializeOwned,
+{
     type Op = Op<K, V, A>;
 
     fn apply(&mut self, op: &Self::Op) {
@@ -112,29 +114,29 @@ impl<K: Key + Debug, V: Val<A> + Debug, A: Actor> CmRDT for Map<K, V, A> {
                 self.apply_rm(key, &clock).unwrap();
                 self.tree.flush().unwrap();
             },
-            Op::Up { dot: Dot { actor, counter }, key, op } => {
+            Op::Up { dot, key, op } => {
                 let mut map_clock = self.get_clock().unwrap();
-                if map_clock.get(&actor) >= counter {
+                if map_clock.get(&dot.actor) >= dot.counter {
                     // we've seen this op already
                     return;
                 }
 
                 let key_bytes = self.key_bytes(&key).unwrap();
-                let mut entry = if let Some(bytes) = self.tree.get(&key_bytes).unwrap() {
-                    bincode::deserialize(&bytes).unwrap()
-                } else {
-                    Entry {
+                
+                let mut entry = match self.tree.get(&key_bytes).unwrap() {
+                    Some(bytes) => bincode::deserialize(&bytes).unwrap(),
+                    None => Entry {
                         clock: VClock::new(),
                         val: V::default()
                     }
                 };
 
-                entry.clock.witness(actor.clone(), counter);
+                entry.clock.apply(&dot);
                 entry.val.apply(&op);
                 let entry_bytes = bincode::serialize(&entry).unwrap();
                 self.tree.set(key_bytes, entry_bytes).unwrap();
 
-                map_clock.witness(actor, counter);
+                map_clock.apply(&dot);
                 self.put_clock(map_clock).unwrap();
                 self.apply_deferred().unwrap();
                 self.tree.flush().unwrap();
@@ -149,7 +151,11 @@ const KEY_PREFIX: [u8; 1] = [1];
 /// Meta prefix is added to the front of all housekeeping keys created by the database
 const META_PREFIX: [u8; 1] = [0];
 
-impl<K: Key + Debug, V: Val<A> + Debug, A: Actor> Map<K, V, A> {
+impl<K, V, A> Map<K, V, A>
+    where K: Key + Debug + serde::Serialize + serde::de::DeserializeOwned,
+          A: Actor + serde::Serialize + serde::de::DeserializeOwned,
+          V: Val<A> + Debug + serde::Serialize + serde::de::DeserializeOwned,
+{
     /// Constructs an empty Map
     pub fn new(tree: sled::Tree) -> Map<K, V, A> {
         Map {

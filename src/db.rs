@@ -1,9 +1,9 @@
 use crdts::{CmRDT, ReadCtx, AddCtx, RmCtx};
 
-use error::Result;
-use map;
-use data::{Data, Op, Actor, Kind};
-use log::{TaggedOp, LogReplicable};
+use crate::map;
+use crate::error::Result;
+use crate::data::{Data, Op, Actor, Kind};
+use crate::log::{TaggedOp, LogReplicable};
 
 pub type Map = map::Map<(String, Kind), Data, Actor>;
 pub type Entry = map::Entry<Data, Actor>;

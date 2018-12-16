@@ -1,13 +1,3 @@
-#[macro_use]
-extern crate serde_derive;
-extern crate serde;
-
-pub extern crate crdts;
-pub extern crate git2;
-pub extern crate sled;
-
-extern crate bincode;
-
 pub mod error;
 pub mod crypto;
 pub mod db;
@@ -18,7 +8,5 @@ pub mod memory_log;
 pub mod git_log;
 pub mod encrypted_git_log;
 
-pub use error::Error;
-pub use db::DB;
-pub use log::{LogReplicable, TaggedOp};
-pub use data::{Data, Prim, Kind};
+pub use crdts;
+pub use crate::db::DB;

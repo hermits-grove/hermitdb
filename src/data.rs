@@ -1,7 +1,11 @@
-use crdts::{self, CvRDT, CmRDT, Causal};
-use error::{Error, Result};
 use std::hash::{Hash, Hasher};
 use std::mem::transmute;
+
+use serde_derive::{Serialize, Deserialize};
+use crdts::{self, CvRDT, CmRDT, Causal};
+
+use crate::error::{Error, Result};
+
 pub type Actor = u128;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
