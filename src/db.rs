@@ -1,9 +1,9 @@
-use crdts::{CmRDT, VClock, Dot};
+use crdts::{CmRDT, ReadCtx, AddCtx, RmCtx};
 
-use error::Result;
-use map;
-use data::{Data, Op, Actor, Kind};
-use log::{TaggedOp, LogReplicable};
+use crate::map;
+use crate::error::Result;
+use crate::data::{Data, Op, Actor, Kind};
+use crate::log::{TaggedOp, LogReplicable};
 
 pub type Map = map::Map<(String, Kind), Data, Actor>;
 pub type Entry = map::Entry<Data, Actor>;
@@ -18,39 +18,35 @@ impl<L: LogReplicable<Actor, Map>> DB<L> {
         DB { log, map }
     }
 
-    pub fn dot(&self, actor: Actor) -> Result<Dot<Actor>> {
-        self.map.dot(actor)
-    }
-
-    pub fn get(&self, key: &(String, Kind)) -> Result<Option<Entry>> {
+    pub fn get(&self, key: &(String, Kind)) -> Result<ReadCtx<Option<Data>, Actor>> {
         self.map.get(key)
     }
 
-    pub fn update<F, O>(&mut self, key: (impl Into<String>, Kind), dot: Dot<Actor>, updater: F) -> Result<()>
-        where F: FnOnce(Data, Dot<Actor>) -> O,
+    pub fn update<F, O>(&mut self, key: (impl Into<String>, Kind), ctx: AddCtx<Actor>, f: F) -> Result<()>
+        where F: FnOnce(&Data, AddCtx<Actor>) -> O,
               O: Into<Op>
     {
         let (key_str, key_kind) = key;
         let key = (key_str.into(), key_kind);
 
-        let map_op = self.map.update(key, dot, updater)?.into();
+        let map_op = self.map.update(key, ctx, f)?.into();
         let tagged_op = self.log.commit(map_op)?;
-        self.map.apply(tagged_op.op())?;
+        self.map.apply(tagged_op.op());
         self.log.ack(&tagged_op)
     }
 
-    pub fn rm(&mut self, key: (impl Into<String>, Kind), context: VClock<Actor>) -> Result<()> {
+    pub fn rm(&mut self, key: (impl Into<String>, Kind), ctx: RmCtx<Actor>) -> Result<()> {
         let (key_str, key_kind) = key;
         let key = (key_str.into(), key_kind);
 
-        let op = self.map.rm(key, context);
+        let op = self.map.rm(key, ctx);
         let tagged_op = self.log.commit(op)?;
-        self.map.apply(tagged_op.op())?;
+        self.map.apply(tagged_op.op());
         self.log.ack(&tagged_op)
     }
     
 
-    pub fn iter<'a>(&'a self) -> map::Iter<'a, (String, Kind), Data, Actor> {
+    pub fn iter<'a>(&'a self) -> Result<map::Iter<'a, (String, Kind), Data, Actor>> {
         self.map.iter()
     }
 
@@ -58,7 +54,7 @@ impl<L: LogReplicable<Actor, Map>> DB<L> {
         self.log.sync(remote)?;
 
         while let Some(tagged_op) = self.log.next()? {
-            self.map.apply(tagged_op.op())?;
+            self.map.apply(tagged_op.op());
             self.log.ack(&tagged_op)?;
         }
         Ok(())

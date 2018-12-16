@@ -4,33 +4,28 @@ version = "0.1.0"
 authors = ["David Rusu <davidrusu@protonmail.com>"]
 description = "A private decentralized database replicated over Git (or any other distributed log)"
 license="GPL-2.0"
-build = "build.rs"
+edition = "2018"
 
 [dependencies]
-git2 = "0.7.1"
-ring = "0.13.0-alpha"
-serde = "1.0.70"
-serde_derive = "1.0.70"
-tempfile = "3.0.1"
-assert_matches = "1.2.0"
+git2 = "0.8.0"
+ring = "0.13.5"
+serde = "1.0.82"
+serde_derive = "1.0.82"
 
 [dependencies.sled]
-version = "0.15.17"
+version = "0.16.11"
 # features = ["zstd"]
 # path = "../sled/crates/sled"
 
 [dependencies.crdts]
-# path = "../rust-crdt"
-git = "https://github.com/davidrusu/rust-crdt"
-rev = "d34de33d1f464512f7df1f6e7746848ddd363df3"
+git = "https://github.com/rust-crdt/rust-crdt"
+rev = "3cbdd3aeb0ceaac4e08fe541a822eea2eea93c3f"
 
 [dependencies.bincode]
 version = "1.0.1"
 features = ["i128"]
 
 [dev-dependencies]
-quickcheck = "0.6.2"
-skeptic = "0.13"
-
-[build-dependencies]
-skeptic = "0.13"
+assert_matches = "1.3.0"
+quickcheck = "0.7.2"
+tempfile = "3.0.1"

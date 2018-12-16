@@ -1,9 +1,8 @@
-extern crate crdts;
-
 use std::fmt::Debug;
 
 use crdts::{CmRDT, Actor};
-use error::Result;
+
+use crate::error::Result;
 
 pub trait TaggedOp<C: CmRDT> {
     type ID: Eq;

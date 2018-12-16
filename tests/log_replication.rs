@@ -1,16 +1,14 @@
-extern crate hermitdb;
-extern crate tempfile;
-
-#[macro_use]
-extern crate assert_matches;
-
-#[macro_use]
-extern crate quickcheck;
-
-use quickcheck::{Arbitrary, Gen, TestResult};
-
-use hermitdb::crdts::{map, Map, Orswot, CmRDT};
-use hermitdb::{memory_log, git_log, encrypted_git_log, crypto, LogReplicable, TaggedOp};
+use assert_matches::assert_matches;
+use quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
+use git2;
+use hermitdb::{
+    crdts::{map, Map, Orswot, CmRDT},
+    log::{LogReplicable, TaggedOp},
+    memory_log,
+    git_log,
+    encrypted_git_log,
+    crypto
+};
 
 type TActor = u8;
 type TKey = u8;
@@ -24,40 +22,40 @@ struct OpVec(TActor, Vec<TOp>);
 impl Arbitrary for OpVec {
     fn arbitrary<G: Gen>(g: &mut G) -> Self {
         let actor = TActor::arbitrary(g);
-        let num_ops: u8 = g.gen_range(0, 50);
+        let num_ops = u8::arbitrary(g);
         let mut map = TMap::new();
         let mut ops = Vec::with_capacity(num_ops as usize);
         for _ in 0..num_ops {
-            let die_roll: u8 = g.gen();
-            let key = g.gen();
+            let die_roll = u8::arbitrary(g);
+            let key = TKey::arbitrary(g);
+            let read_ctx = map.get(&key);
+            let add_ctx = read_ctx.derive_add_ctx(actor.clone());
             let op = match die_roll % 3 {
                 0 => {
                     // update Orswot
-                    map.update(key, map.dot(actor.clone()), |set, dot| {
-                        let die_roll: u8 = g.gen();
-                        let member = g.gen();
+                    map.update(key, add_ctx, |set, ctx| {
+                        let die_roll = u8::arbitrary(g);
+                        let member = u8::arbitrary(g);
                         match die_roll % 2 {
-                            0 => set.add(member, dot),
+                            0 => set.add(member, ctx),
                             _ => {
-                                let ctx = set.context(&member);
-                                set.remove(member, ctx)
+                                let rm_ctx = set.contains(&member).derive_rm_ctx();
+                                set.remove(member, rm_ctx)
                             }
                         }
                     })
                 },
                 1 => {
                     // rm
-                    let ctx = map.get(&key)
-                        .map(|(_, c)| c)
-                        .unwrap_or(hermitdb::crdts::VClock::new());
-                    map.rm(key, ctx)
+                    let rm_ctx = map.get(&key).derive_rm_ctx();
+                    map.rm(key, rm_ctx)
                 },
                 _ => {
                     // nop
                     map::Op::Nop
                 }
             };
-            map.apply(&op).unwrap();
+            map.apply(&op);
             ops.push(op);
         }
         OpVec(actor, ops)
@@ -86,13 +84,13 @@ fn p2p_converge<L: LogReplicable<TActor, TMap>>(
 
     for op in a_ops {
         let tagged_op = a_log.commit(op).unwrap();
-        assert_matches!(a_map.apply(tagged_op.op()), Ok(()));
+        a_map.apply(tagged_op.op());
         assert_matches!(a_log.ack(&tagged_op), Ok(()));
     }
 
     for op in b_ops {
         let tagged_op = b_log.commit(op).unwrap();
-        assert_eq!(b_map.apply(tagged_op.op()), Ok(()));
+        b_map.apply(tagged_op.op());
         assert_matches!(b_log.ack(&tagged_op), Ok(()));
     }
 
@@ -103,12 +101,12 @@ fn p2p_converge<L: LogReplicable<TActor, TMap>>(
     assert_matches!(a_log.pull(&mut remote), Ok(_));
 
     while let Some(tagged_op) = a_log.next().unwrap() {
-        assert_matches!(a_map.apply(tagged_op.op()), Ok(()));
+        a_map.apply(tagged_op.op());
         assert_matches!(a_log.ack(&tagged_op), Ok(()));
     }
 
     while let Some(tagged_op) = b_log.next().unwrap() {
-        assert_matches!(b_map.apply(tagged_op.op()), Ok(()));
+        b_map.apply(tagged_op.op());
         assert_matches!(b_log.ack(&tagged_op), Ok(()));
     }
 
@@ -158,15 +156,15 @@ quickcheck! {
         let b_log_dir = tempfile::tempdir().unwrap();
         let remote_dir = tempfile::tempdir().unwrap();
         
-        let a_log_git = hermitdb::git2::Repository::init_bare(
+        let a_log_git = git2::Repository::init_bare(
             &a_log_dir.path()
         ).unwrap();
 
-        let b_log_git = hermitdb::git2::Repository::init_bare(
+        let b_log_git = git2::Repository::init_bare(
             &b_log_dir.path()
         ).unwrap();
 
-        let _remote_git = hermitdb::git2::Repository::init_bare(
+        let _remote_git = git2::Repository::init_bare(
             &remote_dir.path()
         ).unwrap();
         
@@ -199,15 +197,15 @@ quickcheck! {
         let b_log_dir = tempfile::tempdir().unwrap();
         let remote_dir = tempfile::tempdir().unwrap();
         
-        let a_log_git = hermitdb::git2::Repository::init_bare(
+        let a_log_git = git2::Repository::init_bare(
             &a_log_dir.path()
         ).unwrap();
 
-        let b_log_git = hermitdb::git2::Repository::init_bare(
+        let b_log_git = git2::Repository::init_bare(
             &b_log_dir.path()
         ).unwrap();
 
-        let _remote_git = hermitdb::git2::Repository::init_bare(
+        let _remote_git = git2::Repository::init_bare(
             &remote_dir.path()
         ).unwrap();
         
@@ -242,7 +240,7 @@ quickcheck! {
         let OpVec(actor, ops) = ops;
         let log_dir = tempfile::tempdir().unwrap();
         let log_path = log_dir.path();
-        let log_git = hermitdb::git2::Repository::init_bare(&log_path).unwrap();
+        let log_git = git2::Repository::init_bare(&log_path).unwrap();
         
         let log = git_log::Log::new(actor, log_git);
         
@@ -255,7 +253,7 @@ quickcheck! {
         let OpVec(actor, ops) = ops;
         let log_dir = tempfile::tempdir().unwrap();
         let log_path = log_dir.path();
-        let log_git = hermitdb::git2::Repository::init_bare(&log_path).unwrap();
+        let log_git = git2::Repository::init_bare(&log_path).unwrap();
 
         let root_key = crypto::KDF {
             pbkdf2_iters: 1,

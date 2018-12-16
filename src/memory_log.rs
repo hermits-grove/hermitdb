@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 use std::fmt::{self, Debug};
 
 use crdts::{CmRDT, Actor};
-use log::{TaggedOp, LogReplicable};
-use error::Result;
+
+use crate::log::{TaggedOp, LogReplicable};
+use crate::error::Result;
 
 pub struct Log<A: Actor, C: CmRDT> {
     actor: A,

@@ -1,16 +1,14 @@
-extern crate bincode;
-extern crate serde;
-
 use std::str::FromStr;
 use std::string::ToString;
 use std::fmt::{self, Debug};
 use std::marker::PhantomData;
 
+use serde_derive::{Serialize, Deserialize};
 use git2;
-
-use error::{Error, Result};
 use crdts::{CmRDT, Actor};
-use log::{TaggedOp, LogReplicable};
+
+use crate::error::{Error, Result};
+use crate::log::{TaggedOp, LogReplicable};
 
 pub struct Log<A: Actor, C: CmRDT> {
     actor: A,
@@ -34,7 +32,6 @@ pub struct Remote {
     auth: Auth,
 }
 
-#[serde(bound(deserialize = ""))]
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoggedOp<A: Actor, C: CmRDT> {
     actor: A,
@@ -42,7 +39,9 @@ pub struct LoggedOp<A: Actor, C: CmRDT> {
     op: C::Op
 }
 
-impl<A: Actor, C: CmRDT> Debug for LoggedOp<A, C> {
+impl<A: Actor, C: CmRDT> Debug for LoggedOp<A, C>
+    where C::Op: serde::Serialize + serde::de::DeserializeOwned
+{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "LoggedOp {{ actor: {:?}, index: {:?}, op: {:?} }}",
                self.actor,
@@ -52,7 +51,9 @@ impl<A: Actor, C: CmRDT> Debug for LoggedOp<A, C> {
     }
 }
 
-impl<A: Actor, C: CmRDT> TaggedOp<C> for LoggedOp<A, C> {
+impl<A: Actor, C: CmRDT> TaggedOp<C> for LoggedOp<A, C>
+    where C::Op: serde::Serialize + serde::de::DeserializeOwned
+{
     type ID = git2::Oid;
 
     fn id(&self) -> Self::ID {
@@ -64,7 +65,9 @@ impl<A: Actor, C: CmRDT> TaggedOp<C> for LoggedOp<A, C> {
     }
 }
 
-impl<A: Actor, C: CmRDT> LoggedOp<A, C> {
+impl<A: Actor, C: CmRDT> LoggedOp<A, C>
+    where C::Op: serde::Serialize + serde::de::DeserializeOwned
+{
     pub fn actor(&self) -> &A {
         &self.actor
     }
@@ -141,8 +144,9 @@ impl<A: Actor, C: CmRDT> LoggedOp<A, C> {
 }
 
 
-impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C> where
-    A: Actor + FromStr + ToString
+impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C>
+    where C::Op: serde::Serialize + serde::de::DeserializeOwned,
+          A: Actor + ToString + FromStr
 {
     type LoggedOp = LoggedOp<A, C>;
     type Remote = Remote;
@@ -326,8 +330,8 @@ impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C> where
     }
 }
 
-impl<A, C: CmRDT> Log<A, C>
-    where A: Actor + FromStr + ToString
+impl<A: Actor, C: CmRDT> Log<A, C>
+    where C::Op: serde::Serialize + serde::de::DeserializeOwned
 {
     pub fn new(actor: A, repo: git2::Repository) -> Self {
         Log { actor, repo, phantom_crdt: PhantomData }
