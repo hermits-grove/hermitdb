@@ -1,5 +1,4 @@
 use std::hash::{Hash, Hasher};
-use std::mem::transmute;
 
 use serde_derive::{Serialize, Deserialize};
 use crdts::{self, CvRDT, CmRDT, Causal};
@@ -23,10 +22,7 @@ impl Hash for Prim {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
             Prim::Nil => 0u8.hash(state),
-            Prim::Float(f) => unsafe {
-                let f_as_u: u64 = transmute(f);
-                f_as_u.hash(state)
-            },
+            Prim::Float(f) => f.to_bits().hash(state),
             Prim::Int(i) => i.hash(state),
             Prim::Str(s) => s.hash(state),
             Prim::Blob(b) => b.hash(state)
