@@ -134,7 +134,7 @@ impl<K, V, A> CmRDT for Map<K, V, A>
                 entry.clock.apply(&dot);
                 entry.val.apply(&op);
                 let entry_bytes = bincode::serialize(&entry).unwrap();
-                self.sled.set(key_bytes, entry_bytes).unwrap();
+                self.sled.insert(key_bytes, entry_bytes).unwrap();
 
                 map_clock.apply(&dot);
                 self.put_clock(map_clock).unwrap();
@@ -260,13 +260,13 @@ impl<K, V, A> Map<K, V, A>
         }
 
         let key_bytes = self.key_bytes(&key)?;
-        if let Some(entry_bytes) = self.sled.del(&key_bytes)? {
+        if let Some(entry_bytes) = self.sled.remove(&key_bytes)? {
             let mut entry: Entry<V, A> = bincode::deserialize(&entry_bytes)?;
             entry.clock.subtract(&clock);
             if !entry.clock.is_empty() {
                 entry.val.truncate(&clock);
                 let new_entry_bytes = bincode::serialize(&entry)?;
-                self.sled.set(key_bytes, new_entry_bytes)?;
+                self.sled.insert(key_bytes, new_entry_bytes)?;
             }
         }
         Ok(())
@@ -285,7 +285,7 @@ impl<K, V, A> Map<K, V, A>
     fn put_clock(&self, clock: VClock<A>) -> Result<()> {
         let clock_key = self.meta_key_bytes("clock".as_bytes().to_vec());
         let clock_bytes = bincode::serialize(&clock)?;
-        self.sled.set(clock_key, clock_bytes)?;
+        self.sled.insert(clock_key, clock_bytes)?;
         Ok(())
     }
 
@@ -302,7 +302,7 @@ impl<K, V, A> Map<K, V, A>
     fn put_deferred(&mut self, deferred: HashMap<VClock<A>, BTreeSet<K>>) -> Result<()> {
         let deferred_key = self.meta_key_bytes("deferred".as_bytes().to_vec());
         let deferred_bytes = bincode::serialize(&deferred)?;
-        self.sled.set(deferred_key, deferred_bytes)?;
+        self.sled.insert(deferred_key, deferred_bytes)?;
         Ok(())
     }
 }

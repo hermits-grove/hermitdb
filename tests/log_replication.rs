@@ -61,7 +61,7 @@ impl Arbitrary for OpVec {
         OpVec(actor, ops)
     }
 
-    fn shrink(&self) -> Box<Iterator<Item = Self>> {
+    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
         let mut shrunk: Vec<Self> = Vec::new();
         for i in 0..self.1.len() {
             let mut vec = self.1.clone();

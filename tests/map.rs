@@ -1,4 +1,3 @@
-use assert_matches;
 use quickcheck::{quickcheck, TestResult};
 use hermitdb::crdts::{
     map,
