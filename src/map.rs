@@ -26,7 +26,7 @@ impl<A: Actor, T> Val<A> for T where
 pub struct Map<K: Key, V: Val<A>, A: Actor> {
     // This clock stores the current version of the Map, it should
     // be greator or equal to all Entry clock's in the Map.
-    tree: sled::Tree,
+    sled: sled::Db,
     phantom_key: PhantomData<K>,
     phantom_val: PhantomData<V>,
     phantom_actor: PhantomData<A>
@@ -41,8 +41,8 @@ pub struct Entry<V: Val<A>, A: Actor> {
     pub val: V
 }
 
-pub struct Iter<'a, K: Key, V: Val<A>, A: Actor> {
-    iter: sled::Iter<'a>,
+pub struct Iter<K: Key, V: Val<A>, A: Actor> {
+    iter: sled::Iter,
     clock: VClock<A>,
     phantom_key: PhantomData<K>,
     phantom_val: PhantomData<V>,
@@ -72,7 +72,7 @@ pub enum Op<K: Key, V: Val<A>, A: Actor> {
     }
 }
 
-impl<'a, K, V, A> Iterator for Iter<'a, K, V, A>
+impl<K, V, A> Iterator for Iter<K, V, A>
     where K: Key + serde::de::DeserializeOwned,
           A: Actor + serde::de::DeserializeOwned,
           V: Val<A> + serde::de::DeserializeOwned
@@ -112,7 +112,7 @@ impl<K, V, A> CmRDT for Map<K, V, A>
             Op::Nop => {/* do nothing */},
             Op::Rm { clock, key } => {
                 self.apply_rm(key, &clock).unwrap();
-                self.tree.flush().unwrap();
+                self.sled.flush().unwrap();
             },
             Op::Up { dot, key, op } => {
                 let mut map_clock = self.get_clock().unwrap();
@@ -123,7 +123,7 @@ impl<K, V, A> CmRDT for Map<K, V, A>
 
                 let key_bytes = self.key_bytes(&key).unwrap();
                 
-                let mut entry = match self.tree.get(&key_bytes).unwrap() {
+                let mut entry = match self.sled.get(&key_bytes).unwrap() {
                     Some(bytes) => bincode::deserialize(&bytes).unwrap(),
                     None => Entry {
                         clock: VClock::new(),
@@ -134,12 +134,12 @@ impl<K, V, A> CmRDT for Map<K, V, A>
                 entry.clock.apply(&dot);
                 entry.val.apply(&op);
                 let entry_bytes = bincode::serialize(&entry).unwrap();
-                self.tree.set(key_bytes, entry_bytes).unwrap();
+                self.sled.set(key_bytes, entry_bytes).unwrap();
 
                 map_clock.apply(&dot);
                 self.put_clock(map_clock).unwrap();
                 self.apply_deferred().unwrap();
-                self.tree.flush().unwrap();
+                self.sled.flush().unwrap();
             }
         }
     }
@@ -157,9 +157,9 @@ impl<K, V, A> Map<K, V, A>
           V: Val<A> + Debug + serde::Serialize + serde::de::DeserializeOwned,
 {
     /// Constructs an empty Map
-    pub fn new(tree: sled::Tree) -> Map<K, V, A> {
+    pub fn new(sled: sled::Db) -> Map<K, V, A> {
         Map {
-            tree: tree,
+            sled: sled,
             phantom_key: PhantomData,
             phantom_val: PhantomData,
             phantom_actor: PhantomData
@@ -181,7 +181,7 @@ impl<K, V, A> Map<K, V, A>
     pub fn get(&self, key: &K) -> Result<ReadCtx<Option<V>, A>> {
         let key_bytes = self.key_bytes(&key)?;
 
-        let entry_opt = if let Some(val_bytes) = self.tree.get(&key_bytes)? {
+        let entry_opt = if let Some(val_bytes) = self.sled.get(&key_bytes)? {
             let entry: Entry<V, A> = bincode::deserialize(&val_bytes)?;
             Some(entry)
         } else {
@@ -222,9 +222,9 @@ impl<K, V, A> Map<K, V, A>
         Op::Rm { clock: ctx.clock, key: key.into() }
     }
 
-    pub fn iter<'a>(&'a self) -> Result<Iter<'a, K, V, A>> {
+    pub fn iter(&self) -> Result<Iter<K, V, A>> {
         Ok(Iter {
-            iter: self.tree.scan(&KEY_PREFIX),
+            iter: self.sled.range(KEY_PREFIX..),
             clock: self.get_clock()?,
             phantom_key: PhantomData,
             phantom_val: PhantomData,
@@ -260,13 +260,13 @@ impl<K, V, A> Map<K, V, A>
         }
 
         let key_bytes = self.key_bytes(&key)?;
-        if let Some(entry_bytes) = self.tree.del(&key_bytes)? {
+        if let Some(entry_bytes) = self.sled.del(&key_bytes)? {
             let mut entry: Entry<V, A> = bincode::deserialize(&entry_bytes)?;
             entry.clock.subtract(&clock);
             if !entry.clock.is_empty() {
                 entry.val.truncate(&clock);
                 let new_entry_bytes = bincode::serialize(&entry)?;
-                self.tree.set(key_bytes, new_entry_bytes)?;
+                self.sled.set(key_bytes, new_entry_bytes)?;
             }
         }
         Ok(())
@@ -274,7 +274,7 @@ impl<K, V, A> Map<K, V, A>
 
     fn get_clock(&self) -> Result<VClock<A>> {
         let clock_key = self.meta_key_bytes("clock".as_bytes().to_vec());
-        let clock = if let Some(clock_bytes) = self.tree.get(&clock_key)? {
+        let clock = if let Some(clock_bytes) = self.sled.get(&clock_key)? {
             bincode::deserialize(&clock_bytes)?
         } else {
             VClock::new()
@@ -285,13 +285,13 @@ impl<K, V, A> Map<K, V, A>
     fn put_clock(&self, clock: VClock<A>) -> Result<()> {
         let clock_key = self.meta_key_bytes("clock".as_bytes().to_vec());
         let clock_bytes = bincode::serialize(&clock)?;
-        self.tree.set(clock_key, clock_bytes)?;
+        self.sled.set(clock_key, clock_bytes)?;
         Ok(())
     }
 
     fn get_deferred(&self) -> Result<HashMap<VClock<A>, BTreeSet<K>>> {
         let deferred_key = self.meta_key_bytes("deferred".as_bytes().to_vec());
-        if let Some(deferred_bytes) = self.tree.get(&deferred_key)? {
+        if let Some(deferred_bytes) = self.sled.get(&deferred_key)? {
             let deferred = bincode::deserialize(&deferred_bytes)?;
             Ok(deferred)
         } else {
@@ -302,7 +302,7 @@ impl<K, V, A> Map<K, V, A>
     fn put_deferred(&mut self, deferred: HashMap<VClock<A>, BTreeSet<K>>) -> Result<()> {
         let deferred_key = self.meta_key_bytes("deferred".as_bytes().to_vec());
         let deferred_bytes = bincode::serialize(&deferred)?;
-        self.tree.set(deferred_key, deferred_bytes)?;
+        self.sled.set(deferred_key, deferred_bytes)?;
         Ok(())
     }
 }
@@ -317,9 +317,9 @@ mod test {
     type TestVal = MVReg<u8, TestActor>;
     type TestMap =  Map<TestKey, crdts::Map<TestKey, TestVal, TestActor>, TestActor>;
 
-    fn mk_tree() -> sled::Tree {
-        let config = sled::ConfigBuilder::new().temporary(true).build();
-        sled::Tree::start(config).unwrap()
+    fn mk_map() -> TestMap {
+        let sled = sled::Config::new().temporary(true).open().unwrap();
+        Map::new(sled)
     }
     
     #[test]
@@ -349,8 +349,8 @@ mod test {
             key: 9
         };
         
-        let mut m1: TestMap = Map::new(mk_tree());
-        let mut m2: TestMap = Map::new(mk_tree());
+        let mut m1: TestMap = mk_map();
+        let mut m2: TestMap = mk_map();
 
         m1.apply(&op_actor1);
         m2.apply(&op_1_actor2);

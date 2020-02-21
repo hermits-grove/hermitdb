@@ -46,7 +46,7 @@ impl<L: LogReplicable<Actor, Map>> DB<L> {
     }
     
 
-    pub fn iter<'a>(&'a self) -> Result<map::Iter<'a, (String, Kind), Data, Actor>> {
+    pub fn iter(&self) -> Result<map::Iter<(String, Kind), Data, Actor>> {
         self.map.iter()
     }
 

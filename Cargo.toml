@@ -13,7 +13,7 @@ serde = "1.0.82"
 serde_derive = "1.0.82"
 
 [dependencies.sled]
-version = "0.16.11"
+version = "0.31.0"
 # features = ["zstd"]
 # path = "../sled/crates/sled"
 

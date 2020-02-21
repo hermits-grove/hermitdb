@@ -12,11 +12,8 @@ use hermitdb::{
 };
 
 fn mk_db(actor: Actor) -> DB<memory_log::Log<Actor, db::Map>> {
-    let config = sled::ConfigBuilder::new().temporary(true).build();
-    let tree = sled::Tree::start(config).unwrap();
-    let log = memory_log::Log::new(actor);
-    let map = map::Map::new(tree);
-    DB::new(log, map)
+    let sled = sled::Config::new().temporary(true).open().unwrap();
+    DB::new(memory_log::Log::new(actor), map::Map::new(sled))
 }
 
 #[test]
