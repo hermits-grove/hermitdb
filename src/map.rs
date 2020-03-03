@@ -1,11 +1,11 @@
-use std::marker::PhantomData;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt::Debug;
-use std::collections::{HashMap, BTreeSet};
+use std::marker::PhantomData;
 
 use bincode;
+use crdts::{Actor, AddCtx, Causal, CmRDT, CvRDT, Dot, ReadCtx, RmCtx, VClock};
+use serde_derive::{Deserialize, Serialize};
 use sled;
-use serde_derive::{Serialize, Deserialize};
-use crdts::{Causal, CvRDT, CmRDT, VClock, Dot, Actor, ReadCtx, AddCtx, RmCtx};
 
 use crate::error::{Error, Result};
 
@@ -14,13 +14,9 @@ pub trait Key: Debug + Ord + Clone + Send {}
 impl<T: Debug + Ord + Clone + Send> Key for T {}
 
 /// Val Trait alias to reduce redundancy in type decl.
-pub trait Val<A: Actor>
-    : Debug + Default + Clone + Send + Causal<A> + CmRDT + CvRDT
-{}
+pub trait Val<A: Actor>: Debug + Default + Clone + Send + Causal<A> + CmRDT + CvRDT {}
 
-impl<A: Actor, T> Val<A> for T where
-    T: Debug + Default + Clone + Send + Causal<A> + CmRDT + CvRDT
-{}
+impl<A: Actor, T> Val<A> for T where T: Debug + Default + Clone + Send + Causal<A> + CmRDT + CvRDT {}
 
 #[derive(Debug)]
 pub struct Map<K: Key, V: Val<A>, A: Actor> {
@@ -29,7 +25,7 @@ pub struct Map<K: Key, V: Val<A>, A: Actor> {
     sled: sled::Db,
     phantom_key: PhantomData<K>,
     phantom_val: PhantomData<V>,
-    phantom_actor: PhantomData<A>
+    phantom_actor: PhantomData<A>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,7 +34,7 @@ pub struct Entry<V: Val<A>, A: Actor> {
     pub clock: VClock<A>,
 
     // The nested CRDT
-    pub val: V
+    pub val: V,
 }
 
 pub struct Iter<K: Key, V: Val<A>, A: Actor> {
@@ -46,7 +42,7 @@ pub struct Iter<K: Key, V: Val<A>, A: Actor> {
     clock: VClock<A>,
     phantom_key: PhantomData<K>,
     phantom_val: PhantomData<V>,
-    phantom_actor: PhantomData<A>
+    phantom_actor: PhantomData<A>,
 }
 
 /// Operations which can be applied to the Map CRDT
@@ -59,7 +55,7 @@ pub enum Op<K: Key, V: Val<A>, A: Actor> {
         /// Remove context
         clock: VClock<A>,
         /// Key to remove
-        key: K
+        key: K,
     },
     /// Update an entry in the map
     Up {
@@ -68,52 +64,56 @@ pub enum Op<K: Key, V: Val<A>, A: Actor> {
         /// Key of the value to update
         key: K,
         /// The operation to apply on the value under `key`
-        op: V::Op
-    }
+        op: V::Op,
+    },
 }
 
 impl<K, V, A> Iterator for Iter<K, V, A>
-    where K: Key + serde::de::DeserializeOwned,
-          A: Actor + serde::de::DeserializeOwned,
-          V: Val<A> + serde::de::DeserializeOwned
+where
+    K: Key + serde::de::DeserializeOwned,
+    A: Actor + serde::de::DeserializeOwned,
+    V: Val<A> + serde::de::DeserializeOwned,
 {
     type Item = Result<(K, ReadCtx<V, A>)>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.iter.next() {
             Some(Ok((k, v))) => {
-                let res = bincode::deserialize(&k[KEY_PREFIX.len()..])
-                    .and_then(|key: K| {
-                        let entry: Entry<V, A> = bincode::deserialize(&v)?;
-                        Ok((key, ReadCtx {
+                let res = bincode::deserialize(&k[KEY_PREFIX.len()..]).and_then(|key: K| {
+                    let entry: Entry<V, A> = bincode::deserialize(&v)?;
+                    Ok((
+                        key,
+                        ReadCtx {
                             add_clock: self.clock.clone(),
                             rm_clock: entry.clock,
-                            val: entry.val
-                        }))
-                    });
+                            val: entry.val,
+                        },
+                    ))
+                });
 
-                Some(res.map_err(|e| Error::from(e)))
-            },
+                Some(res.map_err(Error::from))
+            }
             Some(Err(e)) => Some(Err(Error::from(e))),
-            None => None
+            None => None,
         }
     }
 }
 
 impl<K, V, A> CmRDT for Map<K, V, A>
-    where K: Key + Debug + serde::Serialize + serde::de::DeserializeOwned,
-          A: Actor + serde::Serialize + serde::de::DeserializeOwned,
-          V: Val<A> + Debug + serde::Serialize + serde::de::DeserializeOwned,
+where
+    K: Key + Debug + serde::Serialize + serde::de::DeserializeOwned,
+    A: Actor + serde::Serialize + serde::de::DeserializeOwned,
+    V: Val<A> + Debug + serde::Serialize + serde::de::DeserializeOwned,
 {
     type Op = Op<K, V, A>;
 
     fn apply(&mut self, op: &Self::Op) {
-        match op.clone()  {
-            Op::Nop => {/* do nothing */},
+        match op.clone() {
+            Op::Nop => { /* do nothing */ }
             Op::Rm { clock, key } => {
                 self.apply_rm(key, &clock).unwrap();
                 self.sled.flush().unwrap();
-            },
+            }
             Op::Up { dot, key, op } => {
                 let mut map_clock = self.get_clock().unwrap();
                 if map_clock.get(&dot.actor) >= dot.counter {
@@ -122,13 +122,13 @@ impl<K, V, A> CmRDT for Map<K, V, A>
                 }
 
                 let key_bytes = self.key_bytes(&key).unwrap();
-                
+
                 let mut entry = match self.sled.get(&key_bytes).unwrap() {
                     Some(bytes) => bincode::deserialize(&bytes).unwrap(),
                     None => Entry {
                         clock: VClock::new(),
-                        val: V::default()
-                    }
+                        val: V::default(),
+                    },
                 };
 
                 entry.clock.apply(&dot);
@@ -152,18 +152,19 @@ const KEY_PREFIX: [u8; 1] = [1];
 const META_PREFIX: [u8; 1] = [0];
 
 impl<K, V, A> Map<K, V, A>
-    where K: Key + Debug + serde::Serialize + serde::de::DeserializeOwned,
-          A: Actor + serde::Serialize + serde::de::DeserializeOwned,
-          V: Val<A> + Debug + serde::Serialize + serde::de::DeserializeOwned,
+where
+    K: Key + Debug + serde::Serialize + serde::de::DeserializeOwned,
+    A: Actor + serde::Serialize + serde::de::DeserializeOwned,
+    V: Val<A> + Debug + serde::Serialize + serde::de::DeserializeOwned,
 {
     /// Constructs an empty Map
     pub fn new(sled: sled::Db) -> Map<K, V, A> {
         Map {
-            sled: sled,
+            sled,
             phantom_key: PhantomData,
             phantom_val: PhantomData,
-            phantom_actor: PhantomData
-         }
+            phantom_actor: PhantomData,
+        }
     }
 
     pub fn key_bytes(&self, key: &K) -> Result<Vec<u8>> {
@@ -190,11 +191,11 @@ impl<K, V, A> Map<K, V, A>
 
         Ok(ReadCtx {
             add_clock: self.get_clock()?,
-            rm_clock: entry_opt.clone()
-                .map(|map_entry| map_entry.clock.clone())
-                .unwrap_or_else(|| VClock::new()),
-            val: entry_opt
-                .map(|map_entry| map_entry.val.clone())
+            rm_clock: entry_opt
+                .clone()
+                .map(|map_entry| map_entry.clock)
+                .unwrap_or_else(VClock::new),
+            val: entry_opt.map(|map_entry| map_entry.val),
         })
     }
 
@@ -204,9 +205,10 @@ impl<K, V, A> Map<K, V, A>
     /// The updater must return Some(val) to have the updated val stored back in
     /// the Map. If None is returned, this entry is removed from the Map.
     pub fn update<F, O, I>(&self, key: I, ctx: AddCtx<A>, f: F) -> Result<Op<K, V, A>>
-        where F: FnOnce(&V, AddCtx<A>) -> O,
-              O: Into<V::Op>,
-              I: Into<K>
+    where
+        F: FnOnce(&V, AddCtx<A>) -> O,
+        O: Into<V::Op>,
+        I: Into<K>,
     {
         let key = key.into();
         let op = if let Some(data) = self.get(&key)?.val {
@@ -214,12 +216,19 @@ impl<K, V, A> Map<K, V, A>
         } else {
             f(&V::default(), ctx.clone()).into()
         };
-        Ok(Op::Up { dot: ctx.dot, key, op })
+        Ok(Op::Up {
+            dot: ctx.dot,
+            key,
+            op,
+        })
     }
 
     /// Remove an entry from the Map
     pub fn rm(&self, key: impl Into<K>, ctx: RmCtx<A>) -> Op<K, V, A> {
-        Op::Rm { clock: ctx.clock, key: key.into() }
+        Op::Rm {
+            clock: ctx.clock,
+            key: key.into(),
+        }
     }
 
     pub fn iter(&self) -> Result<Iter<K, V, A>> {
@@ -228,7 +237,7 @@ impl<K, V, A> Map<K, V, A>
             clock: self.get_clock()?,
             phantom_key: PhantomData,
             phantom_val: PhantomData,
-            phantom_actor: PhantomData
+            phantom_actor: PhantomData,
         })
     }
 
@@ -251,11 +260,8 @@ impl<K, V, A> Map<K, V, A>
         let map_clock = self.get_clock()?;
         if !(clock <= &map_clock) {
             let mut deferred = self.get_deferred()?;
-            {
-                let deferred_set = deferred.entry(clock.clone())
-                    .or_insert_with(|| BTreeSet::new());
-                deferred_set.insert(key.clone());
-            }
+            let deferred_set = deferred.entry(clock.clone()).or_insert_with(BTreeSet::new);
+            deferred_set.insert(key.clone());
             self.put_deferred(deferred)?;
         }
 
@@ -273,7 +279,7 @@ impl<K, V, A> Map<K, V, A>
     }
 
     fn get_clock(&self) -> Result<VClock<A>> {
-        let clock_key = self.meta_key_bytes("clock".as_bytes().to_vec());
+        let clock_key = self.meta_key_bytes(b"clock".to_vec());
         let clock = if let Some(clock_bytes) = self.sled.get(&clock_key)? {
             bincode::deserialize(&clock_bytes)?
         } else {
@@ -283,14 +289,14 @@ impl<K, V, A> Map<K, V, A>
     }
 
     fn put_clock(&self, clock: VClock<A>) -> Result<()> {
-        let clock_key = self.meta_key_bytes("clock".as_bytes().to_vec());
+        let clock_key = self.meta_key_bytes(b"clock".to_vec());
         let clock_bytes = bincode::serialize(&clock)?;
         self.sled.insert(clock_key, clock_bytes)?;
         Ok(())
     }
 
     fn get_deferred(&self) -> Result<HashMap<VClock<A>, BTreeSet<K>>> {
-        let deferred_key = self.meta_key_bytes("deferred".as_bytes().to_vec());
+        let deferred_key = self.meta_key_bytes(b"deferred".to_vec());
         if let Some(deferred_bytes) = self.sled.get(&deferred_key)? {
             let deferred = bincode::deserialize(&deferred_bytes)?;
             Ok(deferred)
@@ -300,7 +306,7 @@ impl<K, V, A> Map<K, V, A>
     }
 
     fn put_deferred(&mut self, deferred: HashMap<VClock<A>, BTreeSet<K>>) -> Result<()> {
-        let deferred_key = self.meta_key_bytes("deferred".as_bytes().to_vec());
+        let deferred_key = self.meta_key_bytes(b"deferred".to_vec());
         let deferred_bytes = bincode::serialize(&deferred)?;
         self.sled.insert(deferred_key, deferred_bytes)?;
         Ok(())
@@ -315,40 +321,61 @@ mod test {
     type TestActor = u8;
     type TestKey = u8;
     type TestVal = MVReg<u8, TestActor>;
-    type TestMap =  Map<TestKey, crdts::Map<TestKey, TestVal, TestActor>, TestActor>;
+    type TestMap = Map<TestKey, crdts::Map<TestKey, TestVal, TestActor>, TestActor>;
 
     fn mk_map() -> TestMap {
         let sled = sled::Config::new().temporary(true).open().unwrap();
         Map::new(sled)
     }
-    
+
     #[test]
     fn test_op_exchange_converges_quickcheck1() {
         let op_actor1 = Op::Up {
-            dot: Dot { actor: 0, counter: 3 },
+            dot: Dot {
+                actor: 0,
+                counter: 3,
+            },
             key: 9,
             op: map::Op::Up {
-                dot: Dot { actor: 0, counter: 3 },
+                dot: Dot {
+                    actor: 0,
+                    counter: 3,
+                },
                 key: 0,
                 op: mvreg::Op::Put {
-                    clock: Dot { actor: 0, counter: 3 }.into(),
-                    val: 0
-                }
-            }
+                    clock: Dot {
+                        actor: 0,
+                        counter: 3,
+                    }
+                    .into(),
+                    val: 0,
+                },
+            },
         };
         let op_1_actor2 = Op::Up {
-            dot: Dot { actor: 1, counter: 1 },
+            dot: Dot {
+                actor: 1,
+                counter: 1,
+            },
             key: 9,
             op: map::Op::Rm {
-                clock: Dot { actor: 1, counter: 1 }.into(),
-                key: 0
-            }
+                clock: Dot {
+                    actor: 1,
+                    counter: 1,
+                }
+                .into(),
+                key: 0,
+            },
         };
         let op_2_actor2 = Op::Rm {
-            clock: Dot { actor: 1, counter: 2 }.into(),
-            key: 9
+            clock: Dot {
+                actor: 1,
+                counter: 2,
+            }
+            .into(),
+            key: 9,
         };
-        
+
         let mut m1: TestMap = mk_map();
         let mut m2: TestMap = mk_map();
 
@@ -362,7 +389,7 @@ mod test {
 
         // m2 <- m1
         m2.apply(&op_actor1);
-        
+
         // m1 <- m2 == m2 <- m1
         assert_eq!(
             m1.iter().unwrap().map(|e| e.unwrap()).collect::<Vec<_>>(),
