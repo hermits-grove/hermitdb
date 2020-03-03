@@ -1,7 +1,7 @@
 use std::hash::{Hash, Hasher};
 
-use serde_derive::{Serialize, Deserialize};
-use crdts::{self, CvRDT, CmRDT, Causal};
+use crdts::{self, Causal, CmRDT, CvRDT};
+use serde_derive::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
 
@@ -13,11 +13,12 @@ pub enum Prim {
     Float(f64),
     Int(i64),
     Str(String),
-    Blob(Vec<u8>)
+    Blob(Vec<u8>),
 }
 
 impl Eq for Prim {}
 
+#[allow(clippy::derive_hash_xor_eq)]
 impl Hash for Prim {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
@@ -25,7 +26,7 @@ impl Hash for Prim {
             Prim::Float(f) => f.to_bits().hash(state),
             Prim::Int(i) => i.hash(state),
             Prim::Str(s) => s.hash(state),
-            Prim::Blob(b) => b.hash(state)
+            Prim::Blob(b) => b.hash(state),
         }
     }
 }
@@ -45,7 +46,7 @@ pub enum Kind {
     Float,
     Int,
     Str,
-    Blob
+    Blob,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,14 +54,14 @@ pub enum Data {
     Nil,
     Reg(crdts::MVReg<Prim, Actor>),
     Set(crdts::Orswot<Prim, Actor>),
-    Map(crdts::Map<(String, Kind), Box<Data>, Actor>)
+    Map(crdts::Map<(String, Kind), Box<Data>, Actor>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Op {
     Reg(crdts::mvreg::Op<Prim, Actor>),
     Set(crdts::orswot::Op<Prim, Actor>),
-    Map(crdts::map::Op<(String, Kind), Box<Data>, Actor>)
+    Map(crdts::map::Op<(String, Kind), Box<Data>, Actor>),
 }
 
 impl Default for Data {
@@ -80,7 +81,7 @@ impl CvRDT for Data {
         let kind = self.kind();
         let other_kind = other.kind();
         match (self, other) {
-            (_, Data::Nil) => {/* nothing to do */},
+            (_, Data::Nil) => { /* nothing to do */ }
             (Data::Reg(a), Data::Reg(b)) => a.merge(b),
             (Data::Set(a), Data::Set(b)) => a.merge(b),
             (Data::Map(a), Data::Map(b)) => a.merge(b),
@@ -117,7 +118,7 @@ impl CmRDT for Data {
                 // TAI: can we move this to the type level some how?
                 panic!("Apply failed: invalid kinds {:?}, {:?}", kind, op_kind);
             }
-        }   
+        }
     }
 }
 
@@ -135,7 +136,7 @@ impl Causal<Actor> for Data {
             Data::Nil => (),
             Data::Reg(causal) => causal.truncate(&clock),
             Data::Set(causal) => causal.truncate(&clock),
-            Data::Map(causal) => causal.truncate(&clock)
+            Data::Map(causal) => causal.truncate(&clock),
         }
     }
 }
@@ -152,21 +153,21 @@ impl Data {
             Data::Nil => Kind::Nil,
             Data::Reg(_) => Kind::Reg,
             Data::Set(_) => Kind::Set,
-            Data::Map(_) => Kind::Map
+            Data::Map(_) => Kind::Map,
         }
     }
 
     pub fn to_nil(&self) -> Result<()> {
         match self {
             Data::Nil => Ok(()),
-            other => Err(Error::UnexpectedKind(Kind::Nil, other.kind()))
+            other => Err(Error::UnexpectedKind(Kind::Nil, other.kind())),
         }
     }
     pub fn to_reg(&self) -> Result<crdts::MVReg<Prim, Actor>> {
         match self {
             Data::Nil => Ok(crdts::MVReg::default()),
             Data::Reg(r) => Ok(r.clone()),
-            other => Err(Error::UnexpectedKind(Kind::Reg, other.kind()))
+            other => Err(Error::UnexpectedKind(Kind::Reg, other.kind())),
         }
     }
 
@@ -174,7 +175,7 @@ impl Data {
         match self {
             Data::Nil => Ok(crdts::Orswot::default()),
             Data::Set(s) => Ok(s.clone()),
-            other => Err(Error::UnexpectedKind(Kind::Set, other.kind()))
+            other => Err(Error::UnexpectedKind(Kind::Set, other.kind())),
         }
     }
 
@@ -182,7 +183,7 @@ impl Data {
         match self {
             Data::Nil => Ok(crdts::Map::default()),
             Data::Map(m) => Ok(m.clone()),
-            other => Err(Error::UnexpectedKind(Kind::Map, other.kind()))
+            other => Err(Error::UnexpectedKind(Kind::Map, other.kind())),
         }
     }
 }
@@ -194,42 +195,42 @@ impl Prim {
             Prim::Float(_) => Kind::Float,
             Prim::Int(_) => Kind::Int,
             Prim::Str(_) => Kind::Str,
-            Prim::Blob(_) => Kind::Blob
+            Prim::Blob(_) => Kind::Blob,
         }
     }
 
     pub fn to_nil(&self) -> Result<()> {
         match self {
             Prim::Nil => Ok(()),
-            other => Err(Error::UnexpectedKind(Kind::Nil, other.kind()))
+            other => Err(Error::UnexpectedKind(Kind::Nil, other.kind())),
         }
     }
 
     pub fn to_float(&self) -> Result<f64> {
         match self {
             Prim::Float(p) => Ok(*p),
-            other => Err(Error::UnexpectedKind(Kind::Float, other.kind()))
+            other => Err(Error::UnexpectedKind(Kind::Float, other.kind())),
         }
     }
 
     pub fn to_int(&self) -> Result<i64> {
         match self {
             Prim::Int(p) => Ok(*p),
-            other => Err(Error::UnexpectedKind(Kind::Int, other.kind()))
+            other => Err(Error::UnexpectedKind(Kind::Int, other.kind())),
         }
     }
 
     pub fn to_str(&self) -> Result<String> {
         match self {
             Prim::Str(p) => Ok(p.clone()),
-            other => Err(Error::UnexpectedKind(Kind::Str, other.kind()))
+            other => Err(Error::UnexpectedKind(Kind::Str, other.kind())),
         }
     }
 
     pub fn to_blob(&self) -> Result<Vec<u8>> {
         match self {
             Prim::Blob(p) => Ok(p.clone()),
-            other => Err(Error::UnexpectedKind(Kind::Blob, other.kind()))
+            other => Err(Error::UnexpectedKind(Kind::Blob, other.kind())),
         }
     }
 }
@@ -239,7 +240,7 @@ impl Op {
         match self {
             Op::Reg(_) => Kind::Reg,
             Op::Set(_) => Kind::Set,
-            Op::Map(_) => Kind::Map
+            Op::Map(_) => Kind::Map,
         }
     }
 }
@@ -256,7 +257,7 @@ impl Kind {
             Kind::Float => panic!("attempted to call default_data on Kind::Float"),
             Kind::Int => panic!("attempted to call default_data on Kind::Int"),
             Kind::Str => panic!("attempted to call default_data on Kind::Str"),
-            Kind::Blob => panic!("attempted to call default_data on Kind::Blob")
+            Kind::Blob => panic!("attempted to call default_data on Kind::Blob"),
         }
     }
 }

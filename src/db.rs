@@ -1,16 +1,16 @@
-use crdts::{CmRDT, ReadCtx, AddCtx, RmCtx};
+use crdts::{AddCtx, CmRDT, ReadCtx, RmCtx};
 
-use crate::map;
+use crate::data::{Actor, Data, Kind, Op};
 use crate::error::Result;
-use crate::data::{Data, Op, Actor, Kind};
-use crate::log::{TaggedOp, LogReplicable};
+use crate::log::{LogReplicable, TaggedOp};
+use crate::map;
 
 pub type Map = map::Map<(String, Kind), Data, Actor>;
 pub type Entry = map::Entry<Data, Actor>;
 
 pub struct DB<L: LogReplicable<Actor, Map>> {
     log: L,
-    map: Map
+    map: Map,
 }
 
 impl<L: LogReplicable<Actor, Map>> DB<L> {
@@ -22,14 +22,20 @@ impl<L: LogReplicable<Actor, Map>> DB<L> {
         self.map.get(key)
     }
 
-    pub fn update<F, O>(&mut self, key: (impl Into<String>, Kind), ctx: AddCtx<Actor>, f: F) -> Result<()>
-        where F: FnOnce(&Data, AddCtx<Actor>) -> O,
-              O: Into<Op>
+    pub fn update<F, O>(
+        &mut self,
+        key: (impl Into<String>, Kind),
+        ctx: AddCtx<Actor>,
+        f: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(&Data, AddCtx<Actor>) -> O,
+        O: Into<Op>,
     {
         let (key_str, key_kind) = key;
         let key = (key_str.into(), key_kind);
 
-        let map_op = self.map.update(key, ctx, f)?.into();
+        let map_op = self.map.update(key, ctx, f)?;
         let tagged_op = self.log.commit(map_op)?;
         self.map.apply(tagged_op.op());
         self.log.ack(&tagged_op)
@@ -44,13 +50,12 @@ impl<L: LogReplicable<Actor, Map>> DB<L> {
         self.map.apply(tagged_op.op());
         self.log.ack(&tagged_op)
     }
-    
 
-    pub fn iter<'a>(&'a self) -> Result<map::Iter<'a, (String, Kind), Data, Actor>> {
+    pub fn iter(&self) -> Result<map::Iter<(String, Kind), Data, Actor>> {
         self.map.iter()
     }
 
-    pub fn sync(&mut self, remote: &mut L::Remote ) -> Result<()> {
+    pub fn sync(&mut self, remote: &mut L::Remote) -> Result<()> {
         self.log.sync(remote)?;
 
         while let Some(tagged_op) = self.log.next()? {

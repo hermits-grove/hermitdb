@@ -18,7 +18,7 @@ pub enum Error {
     CRDT(crdts::Error),
     Git(git2::Error),
     IO(std::io::Error),
-    SledGeneric(sled::Error<()>)
+    SledGeneric(sled::Error)
 }
 
 impl fmt::Display for Error {
@@ -67,7 +67,7 @@ impl std::error::Error for Error {
             Error::SledGeneric(e) => e.description()
         }
     }
-    fn cause(&self) -> Option<&std::error::Error> {
+    fn cause(&self) -> Option<&dyn std::error::Error> {
         match self {
             Error::UnexpectedKind(_, _) => None,
             Error::BranchNameEncodingError => None,
@@ -91,8 +91,8 @@ impl From<crdts::Error> for Error {
     }
 }
 
-impl From<sled::Error<()>> for Error {
-    fn from(err: sled::Error<()>) -> Self {
+impl From<sled::Error> for Error {
+    fn from(err: sled::Error) -> Self {
         Error::SledGeneric(err)
     }
 }

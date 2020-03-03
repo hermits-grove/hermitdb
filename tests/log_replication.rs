@@ -1,14 +1,14 @@
+use std::num::NonZeroU32;
+
 use assert_matches::assert_matches;
-use quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
 use git2;
 use hermitdb::{
-    crdts::{map, Map, Orswot, CmRDT},
+    crdts::{map, CmRDT, Map, Orswot},
+    crypto, encrypted_git_log, git_log,
     log::{LogReplicable, TaggedOp},
     memory_log,
-    git_log,
-    encrypted_git_log,
-    crypto
 };
+use quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
 
 type TActor = u8;
 type TKey = u8;
@@ -44,12 +44,12 @@ impl Arbitrary for OpVec {
                             }
                         }
                     })
-                },
+                }
                 1 => {
                     // rm
                     let rm_ctx = map.get(&key).derive_rm_ctx();
                     map.rm(key, rm_ctx)
-                },
+                }
                 _ => {
                     // nop
                     map::Op::Nop
@@ -61,15 +61,15 @@ impl Arbitrary for OpVec {
         OpVec(actor, ops)
     }
 
-    fn shrink(&self) -> Box<Iterator<Item = Self>> {
+    fn shrink(&self) -> Box<dyn Iterator<Item = Self>> {
         let mut shrunk: Vec<Self> = Vec::new();
         for i in 0..self.1.len() {
             let mut vec = self.1.clone();
             vec.remove(i);
-            shrunk.push(OpVec(self.0.clone(), vec))
+            shrunk.push(OpVec(self.0, vec))
         }
         Box::new(shrunk.into_iter())
-    }    
+    }
 }
 
 fn p2p_converge<L: LogReplicable<TActor, TMap>>(
@@ -77,7 +77,7 @@ fn p2p_converge<L: LogReplicable<TActor, TMap>>(
     mut b_log: L,
     mut remote: L::Remote,
     a_ops: Vec<TOp>,
-    b_ops: Vec<TOp>
+    b_ops: Vec<TOp>,
 ) -> TMap {
     let mut a_map = TMap::new();
     let mut b_map = TMap::new();
@@ -97,8 +97,8 @@ fn p2p_converge<L: LogReplicable<TActor, TMap>>(
     assert_matches!(b_log.push(&mut remote), Ok(_));
     assert_matches!(a_log.push(&mut remote), Ok(_));
 
-    assert_matches!(b_log.pull(&mut remote), Ok(_));
-    assert_matches!(a_log.pull(&mut remote), Ok(_));
+    assert_matches!(b_log.pull(&remote), Ok(_));
+    assert_matches!(a_log.pull(&remote), Ok(_));
 
     while let Some(tagged_op) = a_log.next().unwrap() {
         a_map.apply(tagged_op.op());
@@ -155,7 +155,7 @@ quickcheck! {
         let a_log_dir = tempfile::tempdir().unwrap();
         let b_log_dir = tempfile::tempdir().unwrap();
         let remote_dir = tempfile::tempdir().unwrap();
-        
+
         let a_log_git = git2::Repository::init_bare(
             &a_log_dir.path()
         ).unwrap();
@@ -167,7 +167,7 @@ quickcheck! {
         let _remote_git = git2::Repository::init_bare(
             &remote_dir.path()
         ).unwrap();
-        
+
         let a_log = git_log::Log::new(actor1, a_log_git);
         let b_log = git_log::Log::new(actor2, b_log_git);
 
@@ -189,14 +189,14 @@ quickcheck! {
         }
 
         let root_key = crypto::KDF {
-            pbkdf2_iters: 1,
+            pbkdf2_iters: NonZeroU32::new(1).unwrap(),
             salt: [0u8; 256 / 8]
-        }.derive_root("password".as_bytes());
+        }.derive_root(b"password");
 
         let a_log_dir = tempfile::tempdir().unwrap();
         let b_log_dir = tempfile::tempdir().unwrap();
         let remote_dir = tempfile::tempdir().unwrap();
-        
+
         let a_log_git = git2::Repository::init_bare(
             &a_log_dir.path()
         ).unwrap();
@@ -208,17 +208,17 @@ quickcheck! {
         let _remote_git = git2::Repository::init_bare(
             &remote_dir.path()
         ).unwrap();
-        
+
         let a_log = encrypted_git_log::Log::new(
             actor1,
             a_log_git,
-            root_key.derive_child("git_log".as_bytes())
+            root_key.derive_child(b"git_log")
         );
 
         let b_log = encrypted_git_log::Log::new(
             actor2,
             b_log_git,
-            root_key.derive_child("git_log".as_bytes())
+            root_key.derive_child(b"git_log")
         );
 
         let remote = git_log::Remote::no_auth(
@@ -241,9 +241,9 @@ quickcheck! {
         let log_dir = tempfile::tempdir().unwrap();
         let log_path = log_dir.path();
         let log_git = git2::Repository::init_bare(&log_path).unwrap();
-        
+
         let log = git_log::Log::new(actor, log_git);
-        
+
         log_preserves_order(log, ops);
 
         true
@@ -256,16 +256,16 @@ quickcheck! {
         let log_git = git2::Repository::init_bare(&log_path).unwrap();
 
         let root_key = crypto::KDF {
-            pbkdf2_iters: 1,
+            pbkdf2_iters: NonZeroU32::new(1).unwrap(),
             salt: [0u8; 256 / 8]
-        }.derive_root("password".as_bytes());
-        
+        }.derive_root(b"password");
+
         let log = encrypted_git_log::Log::new(
             actor,
             log_git,
-            root_key.derive_child("log".as_bytes())
+            root_key.derive_child(b"log")
         );
-        
+
         log_preserves_order(log, ops);
 
         true

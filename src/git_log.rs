@@ -1,14 +1,14 @@
-use std::str::FromStr;
-use std::string::ToString;
 use std::fmt::{self, Debug};
 use std::marker::PhantomData;
+use std::str::FromStr;
+use std::string::ToString;
 
-use serde_derive::{Serialize, Deserialize};
+use crdts::{Actor, CmRDT};
 use git2;
-use crdts::{CmRDT, Actor};
+use serde_derive::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::log::{TaggedOp, LogReplicable};
+use crate::log::{LogReplicable, TaggedOp};
 
 pub struct Log<A: Actor, C: CmRDT> {
     actor: A,
@@ -19,10 +19,7 @@ pub struct Log<A: Actor, C: CmRDT> {
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum Auth {
     None,
-    UserPass {
-        user: String,
-        pass: String
-    }
+    UserPass { user: String, pass: String },
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
@@ -36,23 +33,27 @@ pub struct Remote {
 pub struct LoggedOp<A: Actor, C: CmRDT> {
     actor: A,
     oid: Vec<u8>, // the object id of the commit with this op
-    op: C::Op
+    op: C::Op,
 }
 
 impl<A: Actor, C: CmRDT> Debug for LoggedOp<A, C>
-    where C::Op: serde::Serialize + serde::de::DeserializeOwned
+where
+    C::Op: serde::Serialize + serde::de::DeserializeOwned,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "LoggedOp {{ actor: {:?}, index: {:?}, op: {:?} }}",
-               self.actor,
-               self.id(),
-               self.op
+        write!(
+            f,
+            "LoggedOp {{ actor: {:?}, index: {:?}, op: {:?} }}",
+            self.actor,
+            self.id(),
+            self.op
         )
     }
 }
 
 impl<A: Actor, C: CmRDT> TaggedOp<C> for LoggedOp<A, C>
-    where C::Op: serde::Serialize + serde::de::DeserializeOwned
+where
+    C::Op: serde::Serialize + serde::de::DeserializeOwned,
 {
     type ID = git2::Oid;
 
@@ -66,7 +67,8 @@ impl<A: Actor, C: CmRDT> TaggedOp<C> for LoggedOp<A, C>
 }
 
 impl<A: Actor, C: CmRDT> LoggedOp<A, C>
-    where C::Op: serde::Serialize + serde::de::DeserializeOwned
+where
+    C::Op: serde::Serialize + serde::de::DeserializeOwned,
 {
     pub fn actor(&self) -> &A {
         &self.actor
@@ -74,30 +76,32 @@ impl<A: Actor, C: CmRDT> LoggedOp<A, C>
 
     fn from_commit(actor: A, repo: &git2::Repository, commit: &git2::Commit) -> Result<Self> {
         let tree = commit.tree()?;
-        let tree_entry = tree.get_name("op")
+        let tree_entry = tree
+            .get_name("op")
             .ok_or(Error::LogCommitDoesNotContainOp)?;
         let id = tree_entry.id();
         let blob = repo.find_blob(id)?;
         let bytes = blob.content();
         let op = bincode::deserialize(bytes)?;
-        Ok(LoggedOp {
-            actor: actor,
-            oid: commit.id().as_bytes().to_vec(),
-            op: op
-        })
+        let oid = commit.id().as_bytes().to_vec();
+        Ok(LoggedOp { actor, oid, op })
     }
 
     fn next_from_branches(
         actor: A,
         repo: &git2::Repository,
         unacked: Option<git2::Branch>,
-        acked: Option<git2::Branch>
+        acked: Option<git2::Branch>,
     ) -> Result<Option<LoggedOp<A, C>>> {
         match (unacked, acked) {
             (Some(unacked), Some(acked)) => {
-                let local_unacked_oid = unacked.get().target()
+                let local_unacked_oid = unacked
+                    .get()
+                    .target()
                     .ok_or(Error::BranchIsNotADirectReference)?;
-                let local_acked_oid = acked.get().target()
+                let local_acked_oid = acked
+                    .get()
+                    .target()
                     .ok_or(Error::BranchIsNotADirectReference)?;
 
                 if local_unacked_oid != local_acked_oid {
@@ -118,15 +122,17 @@ impl<A: Actor, C: CmRDT> LoggedOp<A, C>
                 } else {
                     Ok(None)
                 }
-            },
+            }
             (Some(unacked), None) => {
-                let mut curr_oid = unacked.get().target()
+                let mut curr_oid = unacked
+                    .get()
+                    .target()
                     .ok_or(Error::BranchIsNotADirectReference)?;
                 let mut commit;
                 loop {
                     commit = repo.find_commit(curr_oid)?;
                     let parents: Vec<git2::Oid> = commit.parent_ids().collect();
-                    if parents.len() == 0 {
+                    if parents.is_empty() {
                         break;
                     }
 
@@ -136,17 +142,17 @@ impl<A: Actor, C: CmRDT> LoggedOp<A, C>
 
                 let op = LoggedOp::from_commit(actor, &repo, &commit)?;
                 Ok(Some(op))
-            },
+            }
             (None, Some(_)) => panic!("we have acked ops that were never unacked!"),
-            _ => Ok(None)
+            _ => Ok(None),
         }
     }
 }
 
-
 impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C>
-    where C::Op: serde::Serialize + serde::de::DeserializeOwned,
-          A: Actor + ToString + FromStr
+where
+    C::Op: serde::Serialize + serde::de::DeserializeOwned,
+    A: Actor + ToString + FromStr,
 {
     type LoggedOp = LoggedOp<A, C>;
     type Remote = Remote;
@@ -157,12 +163,9 @@ impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C>
 
         let unacked = self.repo.find_branch(&local_name, git2::BranchType::Local);
         let acked = self.repo.find_branch(&local_acked, git2::BranchType::Local);
-        if let Some(op) = LoggedOp::next_from_branches(
-            self.actor.clone(),
-            &self.repo,
-            unacked.ok(),
-            acked.ok()
-        )? {
+        if let Some(op) =
+            LoggedOp::next_from_branches(self.actor.clone(), &self.repo, unacked.ok(), acked.ok())?
+        {
             return Ok(Some(op));
         }
 
@@ -170,32 +173,39 @@ impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C>
         for branch in self.repo.branches(Some(git2::BranchType::Remote))? {
             let (remote_branch, _) = branch?;
 
-            println!("branch name: {}", remote_branch.name()
-                     ?.ok_or(Error::BranchNameEncodingError)?);
+            println!(
+                "branch name: {}",
+                remote_branch
+                    .name()?
+                    .ok_or(Error::BranchNameEncodingError)?
+            );
 
             let actor = {
-                let branch_name = remote_branch.name()
-                    ?.ok_or(Error::BranchNameEncodingError)?;
+                let branch_name = remote_branch
+                    .name()?
+                    .ok_or(Error::BranchNameEncodingError)?;
                 let split: Vec<&str> = branch_name.split("/actor_").collect();
                 println!("branch_name split: {:?}", split);
                 let actor: A = match split.as_slice() {
-                    [_, s] => s.parse()
-                        .map_err(|_| Error::Parse(
-                            format!("Failed to parse actor from branch: {}", s)))?,
-                    _ => continue
+                    [_, s] => s.parse().map_err(|_| {
+                        Error::Parse(format!("Failed to parse actor from branch: {}", s))
+                    })?,
+                    _ => continue,
                 };
                 println!("actor {:?}", actor.to_string());
                 actor
             };
-            
-            let tracking_branch = self.repo
-                .find_branch(&format!("actor_{}", actor.to_string()), git2::BranchType::Local);
+
+            let tracking_branch = self.repo.find_branch(
+                &format!("actor_{}", actor.to_string()),
+                git2::BranchType::Local,
+            );
 
             let next_op = LoggedOp::next_from_branches(
                 actor,
                 &self.repo,
                 Some(remote_branch),
-                tracking_branch.ok()
+                tracking_branch.ok(),
             )?;
 
             if let Some(op) = next_op {
@@ -209,13 +219,15 @@ impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C>
         match self.next()? {
             Some(expected) => {
                 if expected.id() != logged_op.id() {
-                    return Err(Error::State("Attempting to ack an op that is not the next op".into()));
+                    return Err(Error::State(
+                        "Attempting to ack an op that is not the next op".into(),
+                    ));
                 }
-            },
+            }
             None => {
-                return Err(
-                    Error::State("Attempting to ack an op when no op has been committed".into())
-                );
+                return Err(Error::State(
+                    "Attempting to ack an op when no op has been committed".into(),
+                ));
             }
         }
 
@@ -241,14 +253,14 @@ impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C>
                     .ok_or(Error::BranchIsNotADirectReference)?;
                 let commit = self.repo.find_commit(target)?;
                 Some(commit)
-            },
-            _ => None
+            }
+            _ => None,
         };
 
         let op_bytes = bincode::serialize(&op)?;
         let op_oid = self.repo.blob(&op_bytes)?;
         let mut builder = self.repo.treebuilder(None)?;
-        builder.insert("op", op_oid, 0o100644)?; // TODO: what is this constant?
+        builder.insert("op", op_oid, 0o100_644)?; // TODO: what is this constant?
         let tree_oid = builder.write()?;
         let tree = self.repo.find_tree(tree_oid)?;
 
@@ -262,13 +274,19 @@ impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C>
         let branch_ref = format!("refs/heads/{}", name);
         println!("committing to branch ref: {}", branch_ref);
 
-        let commit_oid = self.repo
-            .commit(Some(&branch_ref), &sig, &sig, "db op", &tree, &parent_commits)?;
-        
+        let commit_oid = self.repo.commit(
+            Some(&branch_ref),
+            &sig,
+            &sig,
+            "db op",
+            &tree,
+            &parent_commits,
+        )?;
+
         LoggedOp::from_commit(
             self.actor.clone(),
             &self.repo,
-            &self.repo.find_commit(commit_oid)?
+            &self.repo.find_commit(commit_oid)?,
         )
     }
 
@@ -279,20 +297,21 @@ impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C>
         let mut git_remote = match self.repo.find_remote(&remote.name) {
             Ok(git_remote) => git_remote,
             Err(_) => {
-                eprintln!("Failed to find remote '{}', adding remote to git", remote.name);
+                eprintln!(
+                    "Failed to find remote '{}', adding remote to git",
+                    remote.name
+                );
                 // this remote is not added to git yet, we add it
                 self.repo.remote(&remote.name, &remote.url)?
             }
         };
 
         println!("found a remote, starting fetch...");
-        
+
         let mut fetch_opt = git2::FetchOptions::new();
         fetch_opt.remote_callbacks(remote.git_callbacks());
         let refspec_iter = git_remote.fetch_refspecs()?;
-        let refspecs: Vec<&str> = refspec_iter.iter()
-            .map(|r| r.unwrap())
-            .collect();
+        let refspecs: Vec<&str> = refspec_iter.iter().map(|r| r.unwrap()).collect();
         git_remote.fetch(&refspecs, Some(&mut fetch_opt), None)?;
         println!("finished fetch");
         Ok(())
@@ -303,7 +322,10 @@ impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C>
         let mut git_remote = match self.repo.find_remote(&remote.name) {
             Ok(git_remote) => git_remote,
             Err(_) => {
-                eprintln!("Failed to find remote '{}', adding remote to git", remote.name);
+                eprintln!(
+                    "Failed to find remote '{}', adding remote to git",
+                    remote.name
+                );
                 // this remote is not added to git yet, we add it
                 self.repo.remote(&remote.name, &remote.url)?
             }
@@ -312,8 +334,10 @@ impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C>
         let mut push_opt = git2::PushOptions::new();
         push_opt.remote_callbacks(remote.git_callbacks());
 
-        let branches: Vec<String> = self.repo.branches(Some(git2::BranchType::Local))
-            ?.map(|b| b.unwrap())
+        let branches: Vec<String> = self
+            .repo
+            .branches(Some(git2::BranchType::Local))?
+            .map(|b| b.unwrap())
             .map(|(branch, _)| branch)
             .map(|b| {
                 let b = b.name().unwrap().unwrap();
@@ -322,7 +346,7 @@ impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C>
             .collect();
 
         let borrowed: Vec<&str> = branches.iter().map(|s| s.as_ref()).collect();
-        
+
         println!("branches to push: {:?}", borrowed);
         git_remote.push(&borrowed, Some(&mut push_opt))?;
         eprintln!("Finish push");
@@ -331,30 +355,40 @@ impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C>
 }
 
 impl<A: Actor, C: CmRDT> Log<A, C>
-    where C::Op: serde::Serialize + serde::de::DeserializeOwned
+where
+    C::Op: serde::Serialize + serde::de::DeserializeOwned,
 {
     pub fn new(actor: A, repo: git2::Repository) -> Self {
-        Log { actor, repo, phantom_crdt: PhantomData }
+        Log {
+            actor,
+            repo,
+            phantom_crdt: PhantomData,
+        }
     }
 }
 
 impl Remote {
     pub fn userpass_auth(name: String, url: String, user: String, pass: String) -> Self {
-        Remote { name, url, auth: Auth::UserPass { user, pass } }
+        Remote {
+            name,
+            url,
+            auth: Auth::UserPass { user, pass },
+        }
     }
 
     pub fn no_auth(name: String, url: String) -> Self {
-        Remote { name, url, auth: Auth::None }
+        Remote {
+            name,
+            url,
+            auth: Auth::None,
+        }
     }
 
     pub fn git_callbacks(&self) -> git2::RemoteCallbacks {
         let mut cbs = git2::RemoteCallbacks::new();
-        cbs.credentials(move |_, _, _| {
-            match self.auth {
-                Auth::None => panic!("It's a bug if this is ever called!"),
-                Auth::UserPass { ref user, ref pass } => 
-                    git2::Cred::userpass_plaintext(user, pass),
-            }
+        cbs.credentials(move |_, _, _| match self.auth {
+            Auth::None => panic!("It's a bug if this is ever called!"),
+            Auth::UserPass { ref user, ref pass } => git2::Cred::userpass_plaintext(user, pass),
         });
         cbs
     }
