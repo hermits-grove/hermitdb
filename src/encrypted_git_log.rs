@@ -8,11 +8,10 @@ use std::marker::PhantomData;
 use serde_derive::{Serialize, Deserialize};
 
 use git2;
-use ring::hmac;
 use crdts::{CmRDT, Actor};
 
 use crate::error::{Result};
-use crate::crypto::{KeyHierarchy, Encrypted};
+use crate::crypto::{KeyHierarchy, Encrypted, rand_256};
 use crate::log::{TaggedOp, LogReplicable};
 use crate::git_log;
 
@@ -22,7 +21,7 @@ struct EncryptedCRDT<C: CmRDT> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct EncryptedOp {
-    sig: Vec<u8>,
+    salt: [u8; 256 / 8],
     op: Encrypted
 }
 
@@ -72,15 +71,10 @@ impl EncryptedOp {
         where C::Op: serde::Serialize + serde::de::DeserializeOwned
     {
         let bytes = bincode::serialize(&op)?;
-
-        let signature = hmac::sign(
-            root.signing_key(),
-            &bytes
-        ).as_ref().to_vec();
-
-        let crypto_key = root.key_for(&signature);
+        let salt = rand_256()?;
+        let crypto_key = root.key_for(&salt);
         Ok(EncryptedOp {
-            sig: signature,
+            salt: salt,
             op: crypto_key.encrypt(&bytes)?
         })
     }
@@ -88,7 +82,7 @@ impl EncryptedOp {
     fn decrypt<C: CmRDT>(&self, root: &KeyHierarchy) -> Result<C::Op>
         where C::Op: serde::Serialize + serde::de::DeserializeOwned
     {
-        let crypto_key = root.key_for(&self.sig);
+        let crypto_key = root.key_for(&self.salt);
         let bytes = crypto_key.decrypt(&self.op)?;
         let op = bincode::deserialize(&bytes)?;
         Ok(op)

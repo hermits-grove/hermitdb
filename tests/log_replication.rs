@@ -1,3 +1,5 @@
+use std::num::NonZeroU32;
+
 use assert_matches::assert_matches;
 use quickcheck::{quickcheck, Arbitrary, Gen, TestResult};
 use git2;
@@ -189,7 +191,7 @@ quickcheck! {
         }
 
         let root_key = crypto::KDF {
-            pbkdf2_iters: 1,
+            pbkdf2_iters: NonZeroU32::new(1).unwrap(),
             salt: [0u8; 256 / 8]
         }.derive_root("password".as_bytes());
 
@@ -256,7 +258,7 @@ quickcheck! {
         let log_git = git2::Repository::init_bare(&log_path).unwrap();
 
         let root_key = crypto::KDF {
-            pbkdf2_iters: 1,
+            pbkdf2_iters: NonZeroU32::new(1).unwrap(),
             salt: [0u8; 256 / 8]
         }.derive_root("password".as_bytes());
         

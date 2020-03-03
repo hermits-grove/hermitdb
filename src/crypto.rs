@@ -1,19 +1,20 @@
 use std::fmt::{self, Debug};
+use std::num::NonZeroU32;
 
 use serde_derive::{Serialize, Deserialize};
-use ring::{aead, hmac, hkdf, digest, pbkdf2};
+use ring::{aead, hkdf, pbkdf2};
 use ring::rand::{SecureRandom, SystemRandom};
 
 use crate::error::{Error, Result};
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KDF {
-    pub pbkdf2_iters: u32,
+    pub pbkdf2_iters: NonZeroU32,
     pub salt: [u8; 256 / 8]
 }
 
 pub struct KeyHierarchy {
-    key: hmac::SigningKey
+    key: hkdf::Prk
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -32,14 +33,15 @@ impl KDF {
         let mut root_key = [0u8; 256 / 8];
 
         pbkdf2::derive(
-            &digest::SHA256,
+            pbkdf2::PBKDF2_HMAC_SHA256,
             self.pbkdf2_iters,
             &self.salt,
             &pass,
             &mut root_key
         );
 
-        let key = hmac::SigningKey::new(&digest::SHA256, &root_key);
+        let key = hkdf::Salt::new(hkdf::HKDF_SHA256, &self.salt)
+            .extract(&root_key);
 
         KeyHierarchy { key }
     }
@@ -47,13 +49,14 @@ impl KDF {
 
 impl KeyHierarchy {
     pub fn derive_child(&self, namespace: &[u8]) -> KeyHierarchy {
-        KeyHierarchy {
-            key: hkdf::extract(&self.key, namespace)
-        }
-    }
+        let mut salt = [0u8; 256/8];
+        self.key.expand(&[], hkdf::HKDF_SHA256)
+            .and_then(|output_keying_mat| output_keying_mat.fill(&mut salt))
+            .unwrap();
 
-    pub fn signing_key(&self) -> &hmac::SigningKey {
-        &self.key
+        KeyHierarchy {
+            key: hkdf::Salt::new(hkdf::HKDF_SHA256, &salt).extract(namespace)
+        }
     }
 
     pub fn key_for(&self, plaintext_unique_id: &[u8]) -> CryptoKey {
@@ -61,7 +64,9 @@ impl KeyHierarchy {
             key: [0u8; 256 / 8]
         };
 
-        hkdf::expand(&self.key, plaintext_unique_id, &mut crypto_key.key);
+        self.key.expand(&[plaintext_unique_id], hkdf::HKDF_SHA256)
+            .and_then(|okm| okm.fill(&mut crypto_key.key))
+            .unwrap();
 
         crypto_key
     }
@@ -72,7 +77,7 @@ impl CryptoKey {
         let algo = &aead::CHACHA20_POLY1305;
 
         let mut cryptic = Encrypted {
-            nonce: rand_96()?,
+            nonce: rand_nonce()?,
             ciphertext: vec![0u8; plaintext.len() + algo.tag_len()]
         };
 
@@ -81,15 +86,15 @@ impl CryptoKey {
         // TODO: sanity check, rm this once you've convinced yourself
         assert_eq!(&cryptic.ciphertext[0..plaintext.len()], plaintext);
 
-        let key = aead::SealingKey::new(algo, &self.key)
-            .map_err(|_| Error::Crypto("Failed to create a sealing key".into()))?;
+        let unbound_key = aead::UnboundKey::new(algo, &self.key)
+            .map_err(|_| Error::Crypto("Failed to create an unbound key for sealing".into()))?;
 
-        aead::seal_in_place(
-            &key,                    // crypto key
-            &cryptic.nonce,          // nonce
-            &cryptic.nonce,          // ad
+        let key = aead::LessSafeKey::new(unbound_key);
+
+        key.seal_in_place_append_tag(
+            aead::Nonce::assume_unique_for_key(cryptic.nonce),
+            aead::Aad::empty(),
             &mut cryptic.ciphertext, // plaintext (encrypted in place)
-            algo.tag_len()
         ).map_err(|_| Error::Crypto("Failed to encrypt".into()))?;
 
         Ok(cryptic)
@@ -98,19 +103,19 @@ impl CryptoKey {
     pub fn decrypt(&self, encrypted: &Encrypted) -> Result<Vec<u8>> {
         let algo = &aead::CHACHA20_POLY1305;
 
-        let key = aead::OpeningKey::new(algo, &self.key)
-            .map_err(|_| Error::Crypto("Failed to create an opening key".into()))?;
+        let unbound_key = aead::UnboundKey::new(algo, &self.key)
+            .map_err(|_| Error::Crypto("Failed to create an unbound key for opening".into()))?;
+        let key = aead::LessSafeKey::new(unbound_key);
 
-        let mut ciphertext = encrypted.ciphertext.clone();
-        let plain = aead::open_in_place(
-            &key,                   // crypto key
-            &encrypted.nonce,       // nonce
-            &encrypted.nonce,       // ad
-            0,                      // prefix padding (in bytes) to discard
-            &mut ciphertext         // cyphertext (decrypted in place)
+        let mut in_out = encrypted.ciphertext.clone();
+        let plain_with_tag = key.open_in_place(
+            aead::Nonce::assume_unique_for_key(encrypted.nonce),
+            aead::Aad::empty(),
+            &mut in_out  // cyphertext (decrypted in place)
         ).map_err(|_| Error::Crypto("Failed to decrypt".into()))?;
 
-        Ok(plain.to_vec())
+        let plain = plain_with_tag[0..plain_with_tag.len() - algo.tag_len()].to_vec();
+        Ok(plain)
     }
 }
 
@@ -139,21 +144,12 @@ pub fn bytes_to_u32(xs: &[u8; 4]) -> u32 {
         | (xs[3] as u32)
 }
 
-pub fn rand_96() -> Result<[u8; 96/8]> {
+pub fn rand_nonce() -> Result<[u8; 96/8]> {
     let mut buf = [0u8; 96/8];
     // TAI: Should this rng live in a session so we don't have to recreate it each time?
     SystemRandom::new()
         .fill(&mut buf)
         .map_err(|_| Error::Crypto("Failed to generate 96 bits of random".into()))?;
-    Ok(buf)
-}
-
-pub fn rand_128() -> Result<[u8; 128/8]> {
-    let mut buf = [0u8; 128/8];
-    // TAI: Should this rng live in a session so we don't have to recreate it each time?
-    SystemRandom::new()
-        .fill(&mut buf)
-        .map_err(|_| Error::Crypto("Failed to generate 128 bits of random".into()))?;
     Ok(buf)
 }
 
@@ -172,15 +168,23 @@ mod test {
 
     impl PartialEq for KeyHierarchy {
         fn eq(&self, other: &Self) -> bool {
-            // we compare key's by signing the 0 byte... for testing it's probably alright
-            hmac::sign(&self.key, &[0u8]).as_ref() == hmac::sign(&other.key, &[0u8]).as_ref()
+            let mut self_expanded = [0u8; 256/8];
+            let mut other_expanded = [0u8; 256/8];
+            self.key.expand(&[], hkdf::HKDF_SHA256)
+                .and_then(|okm| okm.fill(&mut self_expanded))
+                .unwrap();
+            other.key.expand(&[], hkdf::HKDF_SHA256)
+                .and_then(|okm| okm.fill(&mut other_expanded))
+                .unwrap();
+
+            self_expanded == other_expanded
         }
     }
 
     #[test]
     fn kdf() {
         let kdf = KDF {
-            pbkdf2_iters: 1000,
+            pbkdf2_iters: NonZeroU32::new(1000).unwrap(),
             salt: rand_256().unwrap()
         };
 
@@ -195,7 +199,7 @@ mod test {
     #[test]
     fn key_hierarchy() {
         let kdf = KDF {
-            pbkdf2_iters: 1000,
+            pbkdf2_iters: NonZeroU32::new(1000).unwrap(),
             salt: rand_256().unwrap()
         };
 
@@ -233,7 +237,7 @@ mod test {
     #[test]
     fn plaintext_encrypt_decrypt() {
         let kdf = KDF {
-            pbkdf2_iters: 1000,
+            pbkdf2_iters: NonZeroU32::new(1000).unwrap(),
             salt: rand_256().unwrap()
         };
 
