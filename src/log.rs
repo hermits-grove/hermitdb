@@ -22,7 +22,7 @@ pub trait LogReplicable<A: Actor, C: CmRDT> {
     fn push(&self, remote: &mut Self::Remote) -> Result<()>;
 
     fn sync(&mut self, remote: &mut Self::Remote) -> Result<()> {
-        self.pull(&remote)?;
+        self.pull(remote)?;
         self.push(remote)
     }
 }

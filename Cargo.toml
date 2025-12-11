@@ -7,25 +7,15 @@ license="GPL-2.0"
 edition = "2024"
 
 [dependencies]
-git2 = "0.10.1"
-ring = "0.16.11"
-serde = "1.0.104"
-serde_derive = "1.0.104"
-
-[dependencies.sled]
-version = "0.31.0"
-# features = ["zstd"]
-# path = "../sled/crates/sled"
-
-[dependencies.crdts]
-git = "https://github.com/rust-crdt/rust-crdt"
-rev = "3cbdd3aeb0ceaac4e08fe541a822eea2eea93c3f"
-
-[dependencies.bincode]
-version = "1.2.1"
-features = ["i128"]
+git2 = { version = "0.20.3", features = ["vendored-openssl"] }
+ring = "0.17.14"
+serde = "1.0.228"
+serde_derive = "1.0.228"
+sled = "0.34.7"
+crdts = "7.3.2"
+bincode = "1.3.3"
 
 [dev-dependencies]
-assert_matches = "1.3.0"
-quickcheck = "0.9.2"
-tempfile = "3.1.0"
+assert_matches = "1.5.0"
+quickcheck = "1.0.3"
+tempfile = "3.23.0"

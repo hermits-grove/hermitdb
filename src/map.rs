@@ -3,7 +3,8 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 
 use bincode;
-use crdts::{Actor, AddCtx, Causal, CmRDT, CvRDT, Dot, ReadCtx, RmCtx, VClock};
+use crdts::ctx::{AddCtx, ReadCtx, RmCtx};
+use crdts::{Actor, CmRDT, CvRDT, Dot, ResetRemove, VClock};
 use serde_derive::{Deserialize, Serialize};
 use sled;
 
@@ -14,9 +15,9 @@ pub trait Key: Debug + Ord + Clone + Send {}
 impl<T: Debug + Ord + Clone + Send> Key for T {}
 
 /// Val Trait alias to reduce redundancy in type decl.
-pub trait Val<A: Actor>: Debug + Default + Clone + Send + Causal<A> + CmRDT + CvRDT {}
+pub trait Val<A: Actor>: Debug + Default + Clone + Send + ResetRemove<A> + CmRDT + CvRDT {}
 
-impl<A: Actor, T> Val<A> for T where T: Debug + Default + Clone + Send + Causal<A> + CmRDT + CvRDT {}
+impl<A: Actor, T> Val<A> for T where T: Debug + Default + Clone + Send + ResetRemove<A> + CmRDT + CvRDT {}
 
 #[derive(Debug)]
 pub struct Map<K: Key, V: Val<A>, A: Actor> {
@@ -102,13 +103,18 @@ where
 impl<K, V, A> CmRDT for Map<K, V, A>
 where
     K: Key + Debug + serde::Serialize + serde::de::DeserializeOwned,
-    A: Actor + serde::Serialize + serde::de::DeserializeOwned,
+    A: Actor + Debug + serde::Serialize + serde::de::DeserializeOwned,
     V: Val<A> + Debug + serde::Serialize + serde::de::DeserializeOwned,
 {
     type Op = Op<K, V, A>;
+    type Validation = std::convert::Infallible;
 
-    fn apply(&mut self, op: &Self::Op) {
-        match op.clone() {
+    fn validate_op(&self, _op: &Self::Op) -> std::result::Result<(), Self::Validation> {
+        Ok(())
+    }
+
+    fn apply(&mut self, op: Self::Op) {
+        match op {
             Op::Nop => { /* do nothing */ }
             Op::Rm { clock, key } => {
                 self.apply_rm(key, &clock).unwrap();
@@ -131,12 +137,12 @@ where
                     },
                 };
 
-                entry.clock.apply(&dot);
-                entry.val.apply(&op);
+                entry.clock.apply(dot.clone());
+                entry.val.apply(op);
                 let entry_bytes = bincode::serialize(&entry).unwrap();
                 self.sled.insert(key_bytes, entry_bytes).unwrap();
 
-                map_clock.apply(&dot);
+                map_clock.apply(dot);
                 self.put_clock(map_clock).unwrap();
                 self.apply_deferred().unwrap();
                 self.sled.flush().unwrap();
@@ -180,7 +186,7 @@ where
 
     /// Get a value stored under a key
     pub fn get(&self, key: &K) -> Result<ReadCtx<Option<V>, A>> {
-        let key_bytes = self.key_bytes(&key)?;
+        let key_bytes = self.key_bytes(key)?;
 
         let entry_opt = if let Some(val_bytes) = self.sled.get(&key_bytes)? {
             let entry: Entry<V, A> = bincode::deserialize(&val_bytes)?;
@@ -211,13 +217,14 @@ where
         I: Into<K>,
     {
         let key = key.into();
+        let dot = ctx.dot.clone();
         let op = if let Some(data) = self.get(&key)?.val {
-            f(&data, ctx.clone()).into()
+            f(&data, ctx).into()
         } else {
-            f(&V::default(), ctx.clone()).into()
+            f(&V::default(), ctx).into()
         };
         Ok(Op::Up {
-            dot: ctx.dot,
+            dot,
             key,
             op,
         })
@@ -257,8 +264,15 @@ where
 
     /// Apply a key removal given a context.
     fn apply_rm(&mut self, key: K, clock: &VClock<A>) -> Result<()> {
+        use std::cmp::Ordering;
         let map_clock = self.get_clock()?;
-        if !(clock <= &map_clock) {
+        // Defer the remove if clock is not causally preceded by map_clock
+        // (i.e., clock is concurrent with or causally after map_clock)
+        let should_defer = match clock.partial_cmp(&map_clock) {
+            Some(Ordering::Less) | Some(Ordering::Equal) => false,
+            Some(Ordering::Greater) | None => true,
+        };
+        if should_defer {
             let mut deferred = self.get_deferred()?;
             let deferred_set = deferred.entry(clock.clone()).or_insert_with(BTreeSet::new);
             deferred_set.insert(key.clone());
@@ -268,9 +282,9 @@ where
         let key_bytes = self.key_bytes(&key)?;
         if let Some(entry_bytes) = self.sled.remove(&key_bytes)? {
             let mut entry: Entry<V, A> = bincode::deserialize(&entry_bytes)?;
-            entry.clock.subtract(&clock);
+            entry.clock = entry.clock.clone_without(clock);
             if !entry.clock.is_empty() {
-                entry.val.truncate(&clock);
+                entry.val.reset_remove(clock);
                 let new_entry_bytes = bincode::serialize(&entry)?;
                 self.sled.insert(key_bytes, new_entry_bytes)?;
             }
@@ -364,7 +378,7 @@ mod test {
                     counter: 1,
                 }
                 .into(),
-                key: 0,
+                keyset: std::iter::once(0).collect(),
             },
         };
         let op_2_actor2 = Op::Rm {
@@ -379,16 +393,16 @@ mod test {
         let mut m1: TestMap = mk_map();
         let mut m2: TestMap = mk_map();
 
-        m1.apply(&op_actor1);
-        m2.apply(&op_1_actor2);
-        m2.apply(&op_2_actor2);
+        m1.apply(op_actor1.clone());
+        m2.apply(op_1_actor2.clone());
+        m2.apply(op_2_actor2.clone());
 
         // m1 <- m2
-        m1.apply(&op_1_actor2);
-        m1.apply(&op_2_actor2);
+        m1.apply(op_1_actor2);
+        m1.apply(op_2_actor2);
 
         // m2 <- m1
-        m2.apply(&op_actor1);
+        m2.apply(op_actor1);
 
         // m1 <- m2 == m2 <- m1
         assert_eq!(

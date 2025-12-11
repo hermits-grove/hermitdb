@@ -1,4 +1,5 @@
-use crdts::{AddCtx, CmRDT, ReadCtx, RmCtx};
+use crdts::ctx::{AddCtx, ReadCtx, RmCtx};
+use crdts::CmRDT;
 
 use crate::data::{Actor, Data, Kind, Op};
 use crate::error::Result;
@@ -37,7 +38,7 @@ impl<L: LogReplicable<Actor, Map>> DB<L> {
 
         let map_op = self.map.update(key, ctx, f)?;
         let tagged_op = self.log.commit(map_op)?;
-        self.map.apply(tagged_op.op());
+        self.map.apply(tagged_op.op().clone());
         self.log.ack(&tagged_op)
     }
 
@@ -47,7 +48,7 @@ impl<L: LogReplicable<Actor, Map>> DB<L> {
 
         let op = self.map.rm(key, ctx);
         let tagged_op = self.log.commit(op)?;
-        self.map.apply(tagged_op.op());
+        self.map.apply(tagged_op.op().clone());
         self.log.ack(&tagged_op)
     }
 
@@ -59,7 +60,7 @@ impl<L: LogReplicable<Actor, Map>> DB<L> {
         self.log.sync(remote)?;
 
         while let Some(tagged_op) = self.log.next()? {
-            self.map.apply(tagged_op.op());
+            self.map.apply(tagged_op.op().clone());
             self.log.ack(&tagged_op)?;
         }
         Ok(())

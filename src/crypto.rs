@@ -36,7 +36,7 @@ impl KDF {
             pbkdf2::PBKDF2_HMAC_SHA256,
             self.pbkdf2_iters,
             &self.salt,
-            &pass,
+            pass,
             &mut root_key,
         );
 
