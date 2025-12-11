@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["David Rusu <davidrusu@protonmail.com>"]
 description = "A private decentralized database replicated over Git (or any other distributed log)"
 license="GPL-2.0"
-edition = "2018"
+edition = "2024"
 
 [dependencies]
 git2 = "0.10.1"
