@@ -44,9 +44,9 @@ where
     plaintext_op: C::Op,
 }
 
-impl<A: Actor, C: CmRDT> Debug for LoggedOp<A, C>
+impl<A: Actor + Debug, C: CmRDT> Debug for LoggedOp<A, C>
 where
-    C::Op: serde::Serialize + serde::de::DeserializeOwned,
+    C::Op: Debug + serde::Serialize + serde::de::DeserializeOwned,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
@@ -62,8 +62,13 @@ where
     C::Op: serde::Serialize + serde::de::DeserializeOwned,
 {
     type Op = EncryptedOp;
+    type Validation = std::convert::Infallible;
 
-    fn apply(&mut self, _op: &Self::Op) {
+    fn validate_op(&self, _op: &Self::Op) -> std::result::Result<(), Self::Validation> {
+        Ok(())
+    }
+
+    fn apply(&mut self, _op: Self::Op) {
         panic!("this should never be called");
     }
 }
@@ -108,8 +113,8 @@ where
 
 impl<A: Actor, C: CmRDT> LogReplicable<A, C> for Log<A, C>
 where
-    C::Op: serde::Serialize + serde::de::DeserializeOwned,
-    A: Actor + ToString + FromStr + serde::Serialize,
+    C::Op: Debug + serde::Serialize + serde::de::DeserializeOwned,
+    A: Actor + Debug + ToString + FromStr + serde::Serialize,
 {
     type LoggedOp = LoggedOp<A, C>;
     type Remote = git_log::Remote;

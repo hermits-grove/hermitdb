@@ -17,7 +17,10 @@ pub struct LoggedOp<A: Actor, C: CmRDT> {
     op: C::Op,
 }
 
-impl<A: Actor, C: CmRDT> Debug for LoggedOp<A, C> {
+impl<A: Actor + Debug, C: CmRDT> Debug for LoggedOp<A, C>
+where
+    C::Op: Debug,
+{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
@@ -39,7 +42,10 @@ impl<A: Actor, C: CmRDT> TaggedOp<C> for LoggedOp<A, C> {
     }
 }
 
-impl<A: Actor, C: CmRDT> LogReplicable<A, C> for Log<A, C> {
+impl<A: Actor + Debug, C: CmRDT> LogReplicable<A, C> for Log<A, C>
+where
+    C::Op: Debug + Clone,
+{
     type LoggedOp = LoggedOp<A, C>;
     type Remote = Self;
 
@@ -98,8 +104,8 @@ impl<A: Actor, C: CmRDT> LogReplicable<A, C> for Log<A, C> {
                 .or_insert_with(|| (0, vec![]));
 
             if log.len() > entry.1.len() {
-                for i in (entry.1.len())..log.len() {
-                    entry.1.push(log[i as usize].clone());
+                for item in log.iter().skip(entry.1.len()) {
+                    entry.1.push(item.clone());
                 }
             }
         }

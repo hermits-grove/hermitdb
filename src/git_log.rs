@@ -36,9 +36,9 @@ pub struct LoggedOp<A: Actor, C: CmRDT> {
     op: C::Op,
 }
 
-impl<A: Actor, C: CmRDT> Debug for LoggedOp<A, C>
+impl<A: Actor + Debug, C: CmRDT> Debug for LoggedOp<A, C>
 where
-    C::Op: serde::Serialize + serde::de::DeserializeOwned,
+    C::Op: Debug + serde::Serialize + serde::de::DeserializeOwned,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
@@ -117,7 +117,7 @@ where
                         curr_oid = parents[0];
                     }
 
-                    let op = LoggedOp::from_commit(actor, &repo, &commit)?;
+                    let op = LoggedOp::from_commit(actor, repo, &commit)?;
                     Ok(Some(op))
                 } else {
                     Ok(None)
@@ -140,7 +140,7 @@ where
                     curr_oid = parents[0];
                 }
 
-                let op = LoggedOp::from_commit(actor, &repo, &commit)?;
+                let op = LoggedOp::from_commit(actor, repo, &commit)?;
                 Ok(Some(op))
             }
             (None, Some(_)) => panic!("we have acked ops that were never unacked!"),
@@ -151,8 +151,8 @@ where
 
 impl<A, C: CmRDT> LogReplicable<A, C> for Log<A, C>
 where
-    C::Op: serde::Serialize + serde::de::DeserializeOwned,
-    A: Actor + ToString + FromStr,
+    C::Op: Debug + serde::Serialize + serde::de::DeserializeOwned,
+    A: Actor + Debug + ToString + FromStr,
 {
     type LoggedOp = LoggedOp<A, C>;
     type Remote = Remote;
@@ -384,7 +384,7 @@ impl Remote {
         }
     }
 
-    pub fn git_callbacks(&self) -> git2::RemoteCallbacks {
+    pub fn git_callbacks(&self) -> git2::RemoteCallbacks<'_> {
         let mut cbs = git2::RemoteCallbacks::new();
         cbs.credentials(move |_, _, _| match self.auth {
             Auth::None => panic!("It's a bug if this is ever called!"),

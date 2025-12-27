@@ -1,6 +1,6 @@
 use std::hash::{Hash, Hasher};
 
-use crdts::{self, Causal, CmRDT, CvRDT};
+use crdts::{self, CmRDT, CvRDT, ResetRemove};
 use serde_derive::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
@@ -8,7 +8,9 @@ use crate::error::{Error, Result};
 pub type Actor = u128;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Prim {
+    #[default]
     Nil,
     Float(f64),
     Int(i64),
@@ -18,7 +20,7 @@ pub enum Prim {
 
 impl Eq for Prim {}
 
-#[allow(clippy::derive_hash_xor_eq)]
+#[allow(clippy::derived_hash_with_manual_eq)]
 impl Hash for Prim {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
@@ -31,11 +33,6 @@ impl Hash for Prim {
     }
 }
 
-impl Default for Prim {
-    fn default() -> Self {
-        Prim::Nil
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Kind {
@@ -50,7 +47,9 @@ pub enum Kind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Data {
+    #[default]
     Nil,
     Reg(crdts::MVReg<Prim, Actor>),
     Set(crdts::Orswot<Prim, Actor>),
@@ -64,16 +63,18 @@ pub enum Op {
     Map(crdts::map::Op<(String, Kind), Box<Data>, Actor>),
 }
 
-impl Default for Data {
-    fn default() -> Self {
-        Data::Nil
-    }
-}
 
 impl CvRDT for Data {
-    fn merge(&mut self, other: &Self) {
-        if &mut Data::Nil == self {
-            *self = other.clone()
+    type Validation = std::convert::Infallible;
+
+    fn validate_merge(&self, _other: &Self) -> std::result::Result<(), Self::Validation> {
+        Ok(())
+    }
+
+    fn merge(&mut self, other: Self) {
+        if Data::Nil == *self {
+            *self = other;
+            return;
         }
 
         // compute kinds here in case the match falls to error case.
@@ -95,16 +96,27 @@ impl CvRDT for Data {
 }
 
 impl CvRDT for Box<Data> {
-    fn merge(&mut self, other: &Self) {
-        Data::merge(self, other)
+    type Validation = std::convert::Infallible;
+
+    fn validate_merge(&self, _other: &Self) -> std::result::Result<(), Self::Validation> {
+        Ok(())
+    }
+
+    fn merge(&mut self, other: Self) {
+        Data::merge(self, *other)
     }
 }
 
 impl CmRDT for Data {
     type Op = Op;
+    type Validation = std::convert::Infallible;
 
-    fn apply(&mut self, op: &Self::Op) {
-        if &mut Data::Nil == self {
+    fn validate_op(&self, _op: &Self::Op) -> std::result::Result<(), Self::Validation> {
+        Ok(())
+    }
+
+    fn apply(&mut self, op: Self::Op) {
+        if Data::Nil == *self {
             *self = op.kind().default_data();
         }
         let kind = self.kind();
@@ -124,26 +136,31 @@ impl CmRDT for Data {
 
 impl CmRDT for Box<Data> {
     type Op = Box<Op>;
+    type Validation = std::convert::Infallible;
 
-    fn apply(&mut self, op: &Self::Op) {
-        Data::apply(self, op)
+    fn validate_op(&self, _op: &Self::Op) -> std::result::Result<(), Self::Validation> {
+        Ok(())
+    }
+
+    fn apply(&mut self, op: Self::Op) {
+        Data::apply(self, *op)
     }
 }
 
-impl Causal<Actor> for Data {
-    fn truncate(&mut self, clock: &crdts::VClock<Actor>) {
+impl ResetRemove<Actor> for Data {
+    fn reset_remove(&mut self, clock: &crdts::VClock<Actor>) {
         match self {
             Data::Nil => (),
-            Data::Reg(causal) => causal.truncate(&clock),
-            Data::Set(causal) => causal.truncate(&clock),
-            Data::Map(causal) => causal.truncate(&clock),
+            Data::Reg(causal) => causal.reset_remove(clock),
+            Data::Set(causal) => causal.reset_remove(clock),
+            Data::Map(causal) => causal.reset_remove(clock),
         }
     }
 }
 
-impl Causal<Actor> for Box<Data> {
-    fn truncate(&mut self, clock: &crdts::VClock<Actor>) {
-        Data::truncate(self, clock)
+impl ResetRemove<Actor> for Box<Data> {
+    fn reset_remove(&mut self, clock: &crdts::VClock<Actor>) {
+        Data::reset_remove(self, clock)
     }
 }
 

@@ -15,14 +15,13 @@ pub enum Error {
     Crypto(String),
     State(String),
     Bincode(bincode::Error),
-    CRDT(crdts::Error),
     Git(git2::Error),
     IO(std::io::Error),
     SledGeneric(sled::Error)
 }
 
 impl fmt::Display for Error {
-    fn fmt(&self, mut f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Error::UnexpectedKind(expected, got) =>
                 write!(f, "Unexpected kind! got: {:?}, expected: {:?}", got, expected),
@@ -38,36 +37,16 @@ impl fmt::Display for Error {
                 write!(f, "Crypto failure: {}", s),
             Error::State(s) =>
                 write!(f, "Gitdb entered a bad state: {}", s),
-            Error::Bincode(e) => e.fmt(&mut f),
-            Error::CRDT(e) => e.fmt(&mut f),
-            Error::Git(e) => e.fmt(&mut f),
-            Error::IO(e) => e.fmt(&mut f),
-            Error::SledGeneric(e) => e.fmt(&mut f)
+            Error::Bincode(e) => e.fmt(f),
+            Error::Git(e) => e.fmt(f),
+            Error::IO(e) => e.fmt(f),
+            Error::SledGeneric(e) => e.fmt(f)
         }
     }
 }
 
 impl std::error::Error for Error {
-    fn description(&self) -> &str {
-        match self {
-            Error::UnexpectedKind(_, _) =>
-                "Unexpected kind, were you attempting to convert a Data into something it's not?",
-            Error::BranchNameEncodingError => "A branch name is not utf8 encoded",
-            Error::BranchIsNotADirectReference =>
-                "A branch reference isn't a direct ref to an oid",
-            Error::LogCommitDoesNotContainOp =>
-                "Trees attached to commits in git are expected to have an 'op' entry",
-            Error::Parse(_) => "Parsing failed",
-            Error::Crypto(_) => "Crypto failure",
-            Error::State(_) => "Gitdb entered a bad state",
-            Error::Bincode(e) => e.description(),
-            Error::CRDT(e) => e.description(),
-            Error::Git(e) => e.description(),
-            Error::IO(e) => e.description(),
-            Error::SledGeneric(e) => e.description()
-        }
-    }
-    fn cause(&self) -> Option<&dyn std::error::Error> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Error::UnexpectedKind(_, _) => None,
             Error::BranchNameEncodingError => None,
@@ -77,17 +56,10 @@ impl std::error::Error for Error {
             Error::Crypto(_) => None,
             Error::State(_) => None,
             Error::Bincode(e) => Some(e),
-            Error::CRDT(e) => Some(e),
             Error::Git(e) => Some(e),
             Error::IO(e) => Some(e),
             Error::SledGeneric(e) => Some(e)
         }
-    }
-}
-
-impl From<crdts::Error> for Error {
-    fn from(err: crdts::Error) -> Self {
-        Error::CRDT(err)
     }
 }
 
